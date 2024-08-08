@@ -1,0 +1,11 @@
+[package]
+name = "Couchy"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+#https://docs.rs/eframe/latest/eframe/
+eframe = "0.28.1"
+
+#https://docs.rs/clap/latest/clap/
+clap = {version='*', features = ["cargo","derive"]}
