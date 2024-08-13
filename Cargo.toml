@@ -9,3 +9,10 @@ eframe = "0.28.1"
 
 #https://docs.rs/clap/latest/clap/
 clap = {version='*', features = ["cargo","derive"]}
+
+
+couchy_models = { path = "couchy_models"}
+
+
+
+
