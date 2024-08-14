@@ -23,7 +23,7 @@ jobs:
     steps:
       - name: get_repository
         run: |
-          brew install rust rustup rustc-completion
+          brew install rust rustc-completion
    
       - name: checkout repo
         uses: actions/checkout@v4
