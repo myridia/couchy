@@ -19,6 +19,6 @@ jobs:
           sudo apt-get install curl build-essential gcc make rustc cargo -y
       - name: compile
         run: |
-          cargo build --target --release 
+          cargo build ../ --target --release 
  
      
