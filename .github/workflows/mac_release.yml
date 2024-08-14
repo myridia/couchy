@@ -19,7 +19,7 @@ jobs:
   # Single deploy job since we're just deploying
   build_mac:
     if: github.repository_owner == 'myridia'
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - name: get_repository
         run: |
@@ -33,7 +33,7 @@ jobs:
       - name: compile macos
         run: |
           rustup target add x86_64-apple-darwin
-          cargo build --release 
+          cargo build --target x86_64-apple-darwin --release 
 
       - name: list macos binary
         run: |
