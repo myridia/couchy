@@ -14,13 +14,13 @@ jobs:
     if: github.repository_owner == 'myridia'
     runs-on: ubuntu-latest   
     steps:
-      - name: get_repository
+      - name: install depency 
         run: |
          sudo apt-get install curl build-essential gcc make mingw-w64 -y
          sudo apt-get install rustc cargo -y
          sudo apt-get install g++ zlib1g-dev libmpc-dev libmpfr-dev  libgmp-dev
          
-      - name: checkout repo
+      - name: checkout repository
         uses: actions/checkout@v4
 
       - name: compile windows
@@ -35,7 +35,7 @@ jobs:
           
       - name: list binary
         run: |
-          ls target/x86_64-pc-windows-gnu
+          ls target/x86_64-pc-windows-gnu/release
       
   
       #- name: compile freebsd
