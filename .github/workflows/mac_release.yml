@@ -19,10 +19,11 @@ jobs:
   # Single deploy job since we're just deploying
   build_mac:
     if: github.repository_owner == 'myridia'
-    runs-on: macos-12  
+    runs-on: macos-14
     steps:
       - name: get_repository
         run: |
+          rustup add 
           brew install rust rustc-completion
    
       - name: checkout repo
@@ -31,18 +32,19 @@ jobs:
       
       - name: compile macos
         run: |
+          rustup target add x86_64-apple-darwin
           cargo build --release 
 
       - name: list macos binary
         run: |
-          ls target/release
+          ls target/x86_64-apple-darwin/release
 
 
       - name: Upload Linux Binary to release
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: 'target/release/couchy'
+          file: 'target/x86_64-apple-darwin/release/couchy'
           tag: ${{ github.ref }}
           overwrite: true
           file_glob: true     
