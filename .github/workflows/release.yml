@@ -27,7 +27,7 @@ jobs:
         run: |
           rustup target add x86_64-pc-windows-gnu
           cargo build --target x86_64-pc-windows-gnu --release 
-          gzip target/x86_64-pc-windows-gnu/release/couchy.exe
+         
 
       #- name: compile linux
       #  run: |
@@ -41,7 +41,7 @@ jobs:
       - name: Upload binaries to release
         uses: ncipollo/release-action@v1
         with:
-          artifacts: 'target/x86_64-pc-windows-gnu/release/couchy.exe.gz'
+          artifacts: 'target/x86_64-pc-windows-gnu/release/couchy.exe'
           token: ${{ secrets.GITHUB_TOKEN }}
 
 
