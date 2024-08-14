@@ -16,7 +16,7 @@ jobs:
     steps:
       - name: get_repository
         run: |
-         sudo apt-get install curl build-essential gcc make rustc cargo -y
+         sudo apt-get install curl build-essential gcc make mingw-w64 rustc cargo -y
          
       - name: checkout repo
         uses: actions/checkout@v4
