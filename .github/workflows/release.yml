@@ -23,34 +23,31 @@ jobs:
       - name: checkout repo
         uses: actions/checkout@v4
 
-      - name: add compile targets
+      - name: compile windows
         run: |
-          rustup target add x86_64-unknown-freebsd 
           rustup target add x86_64-pc-windows-gnu
-          rustup target add x86_64-unknown-linux-gnu 
-          rustup target add x86_64-apple-darwin 
+          cargo build --target x86_64-pc-windows-gnu --release 
 
-      - name: compile linux
-        run: |
-          cargo build --target x86_64-unknown-linux-gnu --release 
+
+      #- name: compile linux
+      #  run: |
+      #    cargo build --target --release 
           
-      - name: list linux binary
+      - name: list binary
         run: |
           ls target/release 
+      
+  
       #- name: compile freebsd
       #  run: |
-      #    cargo build --target x86_64-unknown-freebsd --release 
+      #  rustup target add x86_64-unknown-freebsd 
+      #   cargo build --target x86_64-unknown-freebsd --release 
 
         
 
 
-              
-      #- name: compile windows
-      #  run: |
-      #    cargo build --target x86_64-pc-windows-gnu --release 
+        
 
-      #- name: compile macos
-      #  run: |
-      #   cargo build --target x86_64-apple-darwin --release 
+
  
      
