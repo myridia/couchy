@@ -17,7 +17,7 @@ jobs:
       - name: Install depency 
         run: |
          sudo apt-get install curl build-essential gcc make mingw-w64 -y
-         sudo apt-get install rustc cargo -y
+         sudo apt-get install rustc cargo gzip -y
          sudo apt-get install g++ zlib1g-dev libmpc-dev libmpfr-dev  libgmp-dev
          
       - name: Checkout repository
@@ -27,7 +27,7 @@ jobs:
         run: |
           rustup target add x86_64-pc-windows-gnu
           cargo build --target x86_64-pc-windows-gnu --release 
-          gzip -k target/x86_64-pc-windows-gnu/release/couchy.exe
+          gzip target/x86_64-pc-windows-gnu/release/couchy.exe
 
       #- name: compile linux
       #  run: |
