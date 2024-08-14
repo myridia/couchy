@@ -52,7 +52,7 @@ jobs:
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: 'target/x86_64-unknown-linux-gnu/release/couchy.exe'
+          file: 'target/x86_64-unknown-linux-gnu/release/couchy'
           tag: ${{ github.ref }}
           overwrite: true
           file_glob: true
