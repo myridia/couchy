@@ -2,7 +2,7 @@
 name: Mac Rust Build Released
 
 on:
-  push:
+  release:
     branches: ["main"]
 
   # Allows you to run this workflow manually from the Actions tab
