@@ -27,7 +27,7 @@ jobs:
         run: |
           rustup target add x86_64-pc-windows-gnu
           cargo build --target x86_64-pc-windows-gnu --release 
-
+          gzip -k target/x86_64-pc-windows-gnu/release/couchy.exe
 
       #- name: compile linux
       #  run: |
@@ -39,17 +39,12 @@ jobs:
 
 
       - name: Upload binaries to release
-        uses: svenstaro/upload-release-action@v2
+        uses: ncipollo/release-action@v1
         with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: target/x86_64-pc-windows-gnu/release/couchy.exe
-          asset_name: couchy.exe
-          tag: ${{ github.ref }}
-          overwrite: true
-          body: "Windows Binary"
-        
-      
-  
+          artifacts: 'target/x86_64-pc-windows-gnu/release/couchy.exe.gzip'
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+
       #- name: compile freebsd
       #  run: |
       #  rustup target add x86_64-unknown-freebsd 
