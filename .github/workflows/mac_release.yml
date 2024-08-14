@@ -2,12 +2,18 @@
 #name: Mac Rust Build Released
 
 on:
-  release:
+  push:
     branches: ["main"]
-
+    tags:
+      - '*'
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
+permissions:
+  contents: write
+  pull-requests: write 
+  issues: read
+  packages: none
 
 jobs:
   # Single deploy job since we're just deploying
@@ -29,4 +35,4 @@ jobs:
 
       - name: list macos binary
         run: |
-          ls target/release
+          ls target/
