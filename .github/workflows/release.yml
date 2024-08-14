@@ -14,7 +14,7 @@ jobs:
     if: github.repository_owner == 'myridia'
     runs-on: ubuntu-latest   
     steps:
-      - name: Install depency 
+      - name: Install Dependencies
         run: |
          sudo apt-get install curl build-essential gcc make mingw-w64 -y
          sudo apt-get install rustc cargo gzip -y
@@ -41,7 +41,7 @@ jobs:
       - name: Upload binaries to release
         uses: ncipollo/release-action@v1
         with:
-          artifacts: 'target/x86_64-pc-windows-gnu/release/couchy.exe.gzip'
+          artifacts: 'target/x86_64-pc-windows-gnu/release/couchy.exe.gz'
           token: ${{ secrets.GITHUB_TOKEN }}
 
 
