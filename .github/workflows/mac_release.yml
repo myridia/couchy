@@ -21,11 +21,8 @@ jobs:
    
       - name: checkout repo
         uses: actions/checkout@v4
-
-      - name: add compile targets
-        run: |
-          rustup target add x86_64-apple-darwin 
+ 
       
       - name: compile macos
         run: |
-          cargo build --target x86_64-apple-darwin --release 
+          cargo build --release 
