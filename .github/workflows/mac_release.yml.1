@@ -1,0 +1,32 @@
+
+#name: Mac Rust Build Released
+
+on:
+  release:
+    branches: ["main"]
+
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+
+jobs:
+  # Single deploy job since we're just deploying
+  build_mac:
+    if: github.repository_owner == 'myridia'
+    runs-on: macos-latest   
+    steps:
+      - name: get_repository
+        run: |
+          brew install rust rustup-init rustc-completion
+   
+      - name: checkout repo
+        uses: actions/checkout@v4
+ 
+      
+      - name: compile macos
+        run: |
+          cargo build --release 
+
+      - name: list macos binary
+        run: |
+          ls target/release
