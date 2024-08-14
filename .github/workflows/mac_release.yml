@@ -19,7 +19,7 @@ jobs:
   # Single deploy job since we're just deploying
   build_mac:
     if: github.repository_owner == 'myridia'
-    runs-on: macos-latest   
+    runs-on: macos-12  
     steps:
       - name: get_repository
         run: |
