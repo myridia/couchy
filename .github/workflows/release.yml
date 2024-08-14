@@ -3,49 +3,84 @@ name: Build Rust Released
 on:
   push:
     branches: ["main"]
+    tags:
+      - '*'
 
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
+permissions:
+  contents: write
+  pull-requests: write 
+  issues: read
+  packages: none
 
 jobs:
   # Single deploy job since we're just deploying
-  deploy:
+  build:
     if: github.repository_owner == 'myridia'
     runs-on: ubuntu-latest   
     steps:
-      - name: get_repository
+      - name: Install Dependencies
         run: |
          sudo apt-get install curl build-essential gcc make mingw-w64 -y
-         sudo apt-get install rustc cargo -y
+         sudo apt-get install rustc cargo gzip -y
          sudo apt-get install g++ zlib1g-dev libmpc-dev libmpfr-dev  libgmp-dev
          
-      - name: checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: add compile targets
+      - name: Compile windows
         run: |
-          rustup target add x86_64-unknown-freebsd 
           rustup target add x86_64-pc-windows-gnu
-          rustup target add x86_64-unknown-linux-gnu 
-          rustup target add x86_64-apple-darwin 
+          cargo build --target x86_64-pc-windows-gnu --release 
+         
+
+      - name: compile linux
+        run: |
+          rustup target add x86_64-unknown-linux-gnu
+          cargo build --target x86_64-unknown-linux-gnu --release 
+          
+      - name: List binary
+        run: |
+          ls target/x86_64-pc-windows-gnu/release
+          ls target/x86_64-unknown-linux-gnu/release
+          
+         
+
+      - name: Upload Linux Binary to release
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: 'target/x86_64-unknown-linux-gnu/release/couchy'
+          tag: ${{ github.ref }}
+          overwrite: true
+          file_glob: true
+
+      - name: Upload Windows Binary to release
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: 'target/x86_64-pc-windows-gnu/release/couchy.exe'
+          tag: ${{ github.ref }}
+          overwrite: true
+          file_glob: true
+          
+
+        
+   
+
 
       #- name: compile freebsd
       #  run: |
-      #    cargo build --target x86_64-unknown-freebsd --release 
+      #  rustup target add x86_64-unknown-freebsd 
+      #   cargo build --target x86_64-unknown-freebsd --release 
 
         
-      #- name: compile linux
-      #  run: |
-      #    cargo build --target x86_64-unknown-linux-gnu --release 
 
-              
-      #- name: compile windows
-      #  run: |
-      #    cargo build --target x86_64-pc-windows-gnu --release 
 
-      #- name: compile macos
-      #  run: |
-      #   cargo build --target x86_64-apple-darwin --release 
+        
+
+
  
      
