@@ -20,15 +20,21 @@ jobs:
          
       - name: checkout repo
         uses: actions/checkout@v4
+
+      - name: add compile targets
+        run: |
+          rustup target add x86_64-pc-windows-gnu
+          rustup target add x86_64-unknown-linux-gnu 
+          rustup target add x86_64-apple-darwin 
         
       #- name: compile linux
       #  run: |
-      #    cargo build --release 
+      #    cargo build --target x86_64-unknown-linux-gnu --release 
 
               
-      - name: compile windows
-        run: |
-          rustup target add x86_64-pc-windows-gnu
-          cargo build --target x86_64-pc-windows-gnu --release 
+      #- name: compile windows
+      #  run: |
+      #    rustup target add x86_64-pc-windows-gnu
+      #    cargo build --target x86_64-pc-windows-gnu --release 
  
      
