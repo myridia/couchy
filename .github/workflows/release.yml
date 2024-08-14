@@ -35,7 +35,7 @@ jobs:
           
       - name: list binary
         run: |
-          ls target/release/build/
+          ls target/
       
   
       #- name: compile freebsd
