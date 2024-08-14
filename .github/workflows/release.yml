@@ -28,6 +28,6 @@ jobs:
     steps:
       - name: get_repository
         run: |
-          sudo apt-get install rustc -y
+          sudo apt-get install curl build-essential gcc make rustc -y
  
      
