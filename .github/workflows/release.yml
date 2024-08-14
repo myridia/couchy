@@ -43,12 +43,13 @@ jobs:
       - name: List binary
         run: |
           ls target/x86_64-pc-windows-gnu/release
+          gzip 'target/x86_64-pc-windows-gnu/release/couchy.exe'
 
       - name: Upload binaries to release
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: 'target/x86_64-pc-windows-gnu/release/couchy.exe'
+          file: 'target/x86_64-pc-windows-gnu/release/couchy.exe.gz'
           tag: ${{ github.ref }}
           overwrite: true
           file_glob: true
