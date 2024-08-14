@@ -1,7 +1,7 @@
 name: Build Rust Released
 
 on:
-  release:
+  push:
     branches: ["main"]
     tags:
       - '*'
@@ -39,12 +39,18 @@ jobs:
         run: |
           ls target/x86_64-pc-windows-gnu/release
 
-
       - name: Upload binaries to release
-        uses: ncipollo/release-action@v1
+        uses: svenstaro/upload-release-action@v2
         with:
-          artifacts: 'target/x86_64-pc-windows-gnu/release/couchy.exe'
-          token: ${{ secrets.GITHUB_TOKEN }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: 'target/x86_64-pc-windows-gnu/release/couchy.exe'
+          tag: ${{ github.ref }}
+          overwrite: true
+          file_glob: true
+
+        
+   
+
 
       #- name: compile freebsd
       #  run: |
