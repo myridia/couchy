@@ -26,3 +26,7 @@ jobs:
       - name: compile macos
         run: |
           cargo build --release 
+
+      - name: list macos binary
+        run: |
+          ls target/
