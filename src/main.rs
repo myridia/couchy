@@ -1,4 +1,5 @@
 use clap::Parser;
+use couchy_models::views::*;
 use eframe::egui;
 
 #[derive(Parser, Debug)]
@@ -12,7 +13,9 @@ struct Args {
 fn main() {
     let args = Args::parse();
 
-    println!("Hello {}!", args.nox);
+    println!("...start {}!", args.nox);
+    println!("{:?}", env!("host"));
+
     if args.nox != 1 {
         let native_options = eframe::NativeOptions::default();
         eframe::run_native(
@@ -25,9 +28,8 @@ fn main() {
 
 #[derive(Default)]
 struct MyEguiApp {
+    host: String,
     database: String,
-    text: String,
-
     user: String,
     password: String,
     log_lines: String,
@@ -47,6 +49,11 @@ impl MyEguiApp {
 
 impl eframe::App for MyEguiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.host = env!("host").to_string();
+        self.database = env!("database").to_string();
+        self.user = env!("user").to_string();
+        self.password = env!("password").to_string();
+
         if self.window_help_open {
             egui::Window::new("Help")
                 .open(&mut self.window_help_open)
@@ -67,6 +74,15 @@ impl eframe::App for MyEguiApp {
             ui.add_space(20.0);
 
             ui.heading("Couchy");
+
+            ui.label("Host".to_string());
+            let _database = ui.add(
+                egui::TextEdit::singleline(&mut self.host)
+                    .hint_text("Host")
+                    .desired_width(f32::INFINITY)
+                    .password(false),
+            );
+
             ui.label("Database".to_string());
             let _database = ui.add(
                 egui::TextEdit::singleline(&mut self.database)
@@ -75,7 +91,7 @@ impl eframe::App for MyEguiApp {
                     .password(false),
             );
 
-            ui.label("user".to_string());
+            ui.label("User".to_string());
             let _user = ui.add(
                 egui::TextEdit::singleline(&mut self.user)
                     .hint_text("User")
@@ -83,7 +99,7 @@ impl eframe::App for MyEguiApp {
                     .password(false),
             );
 
-            ui.label("user".to_string());
+            ui.label("Password".to_string());
             let _password = ui.add(
                 egui::TextEdit::singleline(&mut self.password)
                     .hint_text("Password")

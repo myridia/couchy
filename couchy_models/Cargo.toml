@@ -1,0 +1,10 @@
+[package]
+name = "couchy_models"
+version = "0.1.0"
+authors = ["veto"]
+edition = "2021"
+
+
+[dependencies]
+
+couch_rs = {version ="*"}
