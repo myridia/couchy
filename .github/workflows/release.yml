@@ -10,20 +10,20 @@ on:
 
 jobs:
   # Single deploy job since we're just deploying
-  deploy:
+  build:
     if: github.repository_owner == 'myridia'
     runs-on: ubuntu-latest   
     steps:
-      - name: install depency 
+      - name: Install depency 
         run: |
          sudo apt-get install curl build-essential gcc make mingw-w64 -y
          sudo apt-get install rustc cargo -y
          sudo apt-get install g++ zlib1g-dev libmpc-dev libmpfr-dev  libgmp-dev
          
-      - name: checkout repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: compile windows
+      - name: Compile windows
         run: |
           rustup target add x86_64-pc-windows-gnu
           cargo build --target x86_64-pc-windows-gnu --release 
@@ -33,9 +33,21 @@ jobs:
       #  run: |
       #    cargo build --target --release 
           
-      - name: list binary
+      - name: List binary
         run: |
           ls target/x86_64-pc-windows-gnu/release
+
+
+      - name: Upload binaries to release
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: target/x86_64-pc-windows-gnu/release/couchy.exe
+          asset_name: eouchy.exe
+          tag: ${{ github.ref }}
+          overwrite: true
+          body: "Windows Binary"
+        
       
   
       #- name: compile freebsd
