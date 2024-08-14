@@ -44,7 +44,6 @@ jobs:
           artifacts: 'target/x86_64-pc-windows-gnu/release/couchy.exe'
           token: ${{ secrets.GITHUB_TOKEN }}
 
-
       #- name: compile freebsd
       #  run: |
       #  rustup target add x86_64-unknown-freebsd 
