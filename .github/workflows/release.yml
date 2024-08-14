@@ -22,7 +22,6 @@ jobs:
         
       - name: compile
         run: |
-          ls 
-          # cargo build ../ --target --release 
+          cargo build ../ --target --release 
  
      
