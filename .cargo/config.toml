@@ -1,0 +1,7 @@
+[target.x86_64-unknown-freebsd]
+linker = "gcc9"
+rustflags = "-L/usr/local/lib"
+
+
+
+
