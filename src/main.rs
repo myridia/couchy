@@ -1,6 +1,8 @@
 use clap::Parser;
-use couchy_models::views::*;
+use couchy::view::*;
 use eframe::egui;
+use homedir::my_home;
+use std::path::Path;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -12,10 +14,11 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
-
     println!("...start {}!", args.nox);
-    println!("{:?}", env!("host"));
-
+    let home = my_home().unwrap().unwrap();
+    let home_config = &format!("{0}/config.toml", home.display());
+    println!("{}", Path::new(home_config).exists());
+    //    let config = PathBuf::from_str(&format!("{0}/config.toml", home.display()));
     if args.nox != 1 {
         let native_options = eframe::NativeOptions::default();
         eframe::run_native(
@@ -49,11 +52,12 @@ impl MyEguiApp {
 
 impl eframe::App for MyEguiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        /*
         self.host = env!("host").to_string();
         self.database = env!("database").to_string();
         self.user = env!("user").to_string();
         self.password = env!("password").to_string();
-
+        */
         if self.window_help_open {
             egui::Window::new("Help")
                 .open(&mut self.window_help_open)
