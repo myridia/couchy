@@ -23,7 +23,7 @@ jobs:
     steps:
       - name: get_repository
         run: |
-          brew install rust rustup-init rustc-completion
+          brew install rust rustup rustc-completion
    
       - name: checkout repo
         uses: actions/checkout@v4
@@ -35,4 +35,14 @@ jobs:
 
       - name: list macos binary
         run: |
-          ls target/
+          ls target/release
+
+
+      - name: Upload Linux Binary to release
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: 'target/release/couchy'
+          tag: ${{ github.ref }}
+          overwrite: true
+          file_glob: true     
