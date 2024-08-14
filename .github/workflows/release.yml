@@ -43,7 +43,7 @@ jobs:
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: target/x86_64-pc-windows-gnu/release/couchy.exe
-          asset_name: eouchy.exe
+          asset_name: couchy.exe
           tag: ${{ github.ref }}
           overwrite: true
           body: "Windows Binary"
