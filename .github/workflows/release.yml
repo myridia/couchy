@@ -14,14 +14,20 @@ jobs:
     if: github.repository_owner == 'myridia'
     runs-on: ubuntu-latest   
     steps:
-      #- name: get_repository
-      #  run: |
-      #    sudo apt-get install curl build-essential gcc make rustc cargo -y
+      - name: get_repository
+        run: |
+         sudo apt-get install curl build-essential gcc make rustc cargo -y
+         
       - name: checkout repo
         uses: actions/checkout@v4
         
-      - name: compile
+      #- name: compile linux
+      #  run: |
+      #    cargo build --release 
+
+              
+      - name: compile windows
         run: |
-          cargo build --release 
+          cargo build --target x86_64-pc-windows-gnu --release 
  
      
