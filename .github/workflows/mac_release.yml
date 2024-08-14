@@ -23,7 +23,6 @@ jobs:
     steps:
       - name: get_repository
         run: |
-          rustup add 
           brew install rust rustc-completion
    
       - name: checkout repo
