@@ -29,4 +29,4 @@ jobs:
 
       - name: list macos binary
         run: |
-          ls target/
+          ls target/release
