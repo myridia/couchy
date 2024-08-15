@@ -43,7 +43,7 @@ jobs:
           cp target/x86_64-apple-darwin/release/couchy target/x86_64-apple-darwin/release/couchy_macos_intel
 
 
-      - name: Upload Linux Binary to release
+      - name: Upload Macos Intel Binary to release
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
@@ -82,7 +82,7 @@ jobs:
           cp target/x86_64-apple-darwin/release/couchy target/x86_64-apple-darwin/release/couchy_macos_silicon
 
 
-      - name: Upload Linux Binary to release
+      - name: Upload Macos Silicon Binary to release
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
