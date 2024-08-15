@@ -18,7 +18,7 @@ permissions:
 jobs:
   # Single deploy job since we're just deploying
   build:
-    if: github.repository_owner == 'myridiax'
+    if: github.repository_owner == 'myridia'
     runs-on: ubuntu-latest   
     steps:
       - name: Install Dependencies
