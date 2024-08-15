@@ -1,6 +1,4 @@
 
-#name: Mac Rust Build Released
-
 on:
   push:
     branches: ["main"]
