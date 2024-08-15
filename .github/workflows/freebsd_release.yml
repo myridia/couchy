@@ -45,7 +45,7 @@ jobs:
     - name: List binary
       run: |
           ls target/release
-          version 
+          freebsd-version 
           
 
           
