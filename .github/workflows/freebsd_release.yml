@@ -18,11 +18,8 @@ jobs:
         envs: 'MYTOKEN MYTOKEN2'
         usesh: true
         prepare: |
-          pkg install -y curl
+          pkg install -y curl rust
 
         run: |
           pwd
-          ls -lah
-          whoami
-          env
-          freebsd-version
+          ls 
