@@ -18,7 +18,7 @@ permissions:
 jobs:
   # Single deploy job since we're just deploying
   build:
-    if: github.repository_owner == 'myridiax'
+    if: github.repository_owner == 'myridia'
     runs-on: ubuntu-latest   
     steps:
       - name: Install Dependencies
@@ -30,15 +30,22 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Compile windows
+      - name: list_targets
+        run: |
+          rustup target list
+
+      - name: add_targets
         run: |
           rustup target add x86_64-pc-windows-gnu
+          rustup target add x86_64-unknown-linux-gnu
+          
+      - name: Compile windows
+        run: |
           cargo build --target x86_64-pc-windows-gnu --release 
          
 
       - name: compile linux
         run: |
-          rustup target add x86_64-unknown-linux-gnu
           cargo build --target x86_64-unknown-linux-gnu --release 
           
       - name: List binary
@@ -46,13 +53,16 @@ jobs:
           ls target/x86_64-pc-windows-gnu/release
           ls target/x86_64-unknown-linux-gnu/release
           
-         
+      - name: rename binaries 
+        run: |
+          cp target/x86_64-unknown-linux-gnu/release/couchy target/x86_64-unknown-linux-gnu/release/couchy_linux
+          cp target/x86_64-pc-windows-gnu/release/couchy.exe target/x86_64-pc-windows-gnu/release/couchy_windows.exe
 
       - name: Upload Linux Binary to release
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: 'target/x86_64-unknown-linux-gnu/release/couchy'
+          file: 'target/x86_64-unknown-linux-gnu/release/couchy_linux'
           tag: ${{ github.ref }}
           overwrite: true
           file_glob: true
@@ -61,7 +71,7 @@ jobs:
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: 'target/x86_64-pc-windows-gnu/release/couchy.exe'
+          file: 'target/x86_64-pc-windows-gnu/release/couchy_windows.exe'
           tag: ${{ github.ref }}
           overwrite: true
           file_glob: true
