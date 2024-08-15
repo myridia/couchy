@@ -1,4 +1,4 @@
-name: Build Rust Released
+name: Build Linux/Windows Release
 
 on:
   push:
@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   # Single deploy job since we're just deploying
-  build:
+  build_linux_windows:
     if: github.repository_owner == 'myridia'
     runs-on: ubuntu-latest   
     steps:
