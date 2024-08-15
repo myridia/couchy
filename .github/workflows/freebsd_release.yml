@@ -36,16 +36,17 @@ jobs:
         run: |
           pwd
           ls 
+          freebsd-version
           cargo build --release 
+          rustup target list
+          ls target/release
           
     - name: list_targets
-      run: |
-          rustup target list
-
+        rustup target list
     - name: List binary
       run: |
           ls target/release
-          freebsd-version 
+           
           
 
           
