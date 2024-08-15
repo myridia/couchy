@@ -31,7 +31,7 @@ jobs:
         envs: 'MYTOKEN MYTOKEN2'
         usesh: true
         prepare: |
-          pkg install -y curl rust
+          pkg install -y curl rust-nightly rust-coreutils
 
         run: |
           pwd
