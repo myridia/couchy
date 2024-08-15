@@ -41,12 +41,12 @@ jobs:
           rustup target list
           ls target/release
           
-    - name: list_targets
-        run:|
-          rustup target list
-    - name: List binary
-        run:| 
-          ls target/release
+    #- name: list_targets
+    #    run:|
+    #      rustup target list
+    #- name: List binary
+    #    run:| 
+    #      ls target/release
            
           
 
