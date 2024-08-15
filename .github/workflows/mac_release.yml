@@ -28,11 +28,13 @@ jobs:
       - name: checkout repo
         uses: actions/checkout@v4
  
-      
-      - name: compile macos
+      - name: list_targets
         run: |
           rustup target list
           rustup target add x86_64-apple-darwin
+    
+      - name: compile macos
+        run: |
           cargo build --target x86_64-apple-darwin --release 
 
       - name: list macos binary
@@ -41,14 +43,14 @@ jobs:
           
       - name: rename macos binary
         run: |
-          cp target/x86_64-apple-darwin/release/couchy target/x86_64-apple-darwin/release/couchy_intel
+          cp target/x86_64-apple-darwin/release/couchy target/x86_64-apple-darwin/release/couchy_macos_intel
 
 
       - name: Upload Linux Binary to release
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: 'target/x86_64-apple-darwin/release/couchy_intel'
+          file: 'target/x86_64-apple-darwin/release/couchy_macos_intel'
           tag: ${{ github.ref }}
           overwrite: true
           file_glob: true     
