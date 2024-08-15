@@ -38,12 +38,12 @@ jobs:
           curl https://sh.rustup.rs -sSf | sh -s -- -y
           . "$HOME/.cargo/env"
           rustup target list
-          #cargo build --release 
-          #ls target/release
+          cargo build --target x86_64-unknown-freebsd --release 
+          ls target/x86_64-unknown-freebsd/release
           
-    #- name: list_targets
-    #    run:|
-    #      rustup target list
+    - name: list_targets
+        run:|
+          ls target/x86_64-unknown-freebsd/release
     #- name: List binary
     #    run:| 
     #      ls target/release
