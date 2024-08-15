@@ -40,14 +40,19 @@ jobs:
           rustup target list
           cargo build --target x86_64-unknown-freebsd --release 
           ls target/x86_64-unknown-freebsd/release
+          cp target/x86_64-unknown-freebsd/release/couchy target/x86_64-unknown-freebsd/release/couchy_freebsd
+
+    - name: Upload freeBSD Binary to release
+      uses: svenstaro/upload-release-action@v2
+      with:
+        repo_token: ${{ secrets.GITHUB_TOKEN }}
+        file: 'target/x86_64-unknown-freebsd/release/couchy_freebsd'
+        tag: ${{ github.ref }}
+        overwrite: true
+        file_glob: true
+
           
-    - name: list_targets
-        run:|
-          ls target/x86_64-unknown-freebsd/release
-    #- name: List binary
-    #    run:| 
-    #      ls target/release
-           
+
           
 
           
