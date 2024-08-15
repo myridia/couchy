@@ -1,9 +1,22 @@
-name: Test
+name: Build FreeBSD Release
 
-on: [push]
+on:
+  push:
+    branches: ["main"]
+    tags:
+      - '*'
+
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write 
+  issues: read
+  packages: none
 
 jobs:
-  test:
+  build_freebsd:
     runs-on: ubuntu-latest
     name: A job to run test in FreeBSD
     env:
@@ -24,3 +37,14 @@ jobs:
           pwd
           ls 
           cargo build --release 
+          
+    - name: list_targets
+      run: |
+          rustup target list
+
+    - name: List binary
+      run: |
+          ls target
+          
+
+          
