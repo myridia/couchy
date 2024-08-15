@@ -33,12 +33,13 @@ jobs:
         prepare: |
           pkg install -y curl 
           
-        name: run inside freebsd
+        name: install rustup in freebsd
         run: |
           curl https://sh.rustup.rs -sSf | sh -s -- -y
-          #cargo build --release 
+          . "$HOME/.cargo/env"
           rustup target list
-          ls target/release
+          #cargo build --release 
+          #ls target/release
           
     #- name: list_targets
     #    run:|
