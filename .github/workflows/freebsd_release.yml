@@ -43,9 +43,9 @@ jobs:
           
     - name: list_targets
         rustup target list
-    - name: List binary
-      run: |
-          ls target/release
+    #- name: List binary
+    #     run: | 
+    #      ls target/release
            
           
 
