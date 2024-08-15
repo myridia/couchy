@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   build_macos_intel:
-    if: github.repository_owner == 'myridiax'
+    if: github.repository_owner == 'myridia'
     runs-on: macos-13
     steps:
       - name: get_repository
@@ -54,7 +54,7 @@ jobs:
 
           
   build_macos_silicon:
-    if: github.repository_owner == 'myridiax'
+    if: github.repository_owner == 'myridia'
     runs-on: macos-13
     steps:
       - name: get_repository
