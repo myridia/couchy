@@ -44,7 +44,8 @@ jobs:
 
     - name: List binary
       run: |
-          ls target
+          ls target/release
+          version 
           
 
           
