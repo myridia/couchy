@@ -14,13 +14,17 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
-    println!("...start {}!", args.nox);
-    let home = my_home().unwrap().unwrap();
-    let home_config = &format!("{0}/config.toml", home.display());
-    println!("{}", Path::new(home_config).exists());
+    //println!("...start {}!", args.nox);
+    //let home = my_home().unwrap().unwrap();
+    //let home_config = &format!("{0}/config.toml", home.display());
+    //println!("{}", Path::new(home_config).exists());
     //    let config = PathBuf::from_str(&format!("{0}/config.toml", home.display()));
     if args.nox != 1 {
-        let native_options = eframe::NativeOptions::default();
+        //let native_options = eframe::NativeOptions::default();
+        let native_options = eframe::NativeOptions {
+            renderer: eframe::Renderer::Wgpu,
+            ..Default::default()
+        };
         eframe::run_native(
             "Couchy",
             native_options,

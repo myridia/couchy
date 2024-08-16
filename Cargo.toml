@@ -5,7 +5,8 @@ edition = "2021"
 
 [dependencies]
 # https://docs.rs/eframe/latest/eframe/
-eframe = "0.28.1"
+eframe = {version= "0.28.1",features = ["wgpu"]}
+#wgpu = { version = "*", features = ["webgpu", "webgl"] }
 
 # https://docs.rs/clap/latest/clap/
 clap = {version='*', features = ["cargo","derive"]}
