@@ -14,6 +14,7 @@ clap = {version='*', features = ["cargo","derive"]}
 # https://docs.rs/homedir/latest/homedir/
 homedir = "*"
 
-
+serde = { version = "*", features = ["derive"] }
+toml = "*"
 
 

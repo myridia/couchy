@@ -1,7 +1,12 @@
 use clap::Parser;
 //use couchy::view::*;
+use couchy::config::get_config;
+use couchy::config::AppConfig;
 use eframe::egui;
 use homedir::my_home;
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::io;
 use std::path::Path;
 
 #[derive(Parser, Debug)]
@@ -14,22 +19,22 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
-    //println!("...start {}!", args.nox);
-    //let home = my_home().unwrap().unwrap();
-    //let home_config = &format!("{0}/config.toml", home.display());
-    //println!("{}", Path::new(home_config).exists());
-    //    let config = PathBuf::from_str(&format!("{0}/config.toml", home.display()));
+
     if args.nox != 1 {
-        //let native_options = eframe::NativeOptions::default();
-        let native_options = eframe::NativeOptions {
-            renderer: eframe::Renderer::Wgpu,
-            ..Default::default()
+        let native_options = eframe::NativeOptions::default();
+        /*
+            let native_options = eframe::NativeOptions {
+                renderer: eframe::Renderer::Wgpu,
+                ..Default::default()
         };
+         */
         eframe::run_native(
             "Couchy",
             native_options,
             Box::new(|cc| Ok(Box::new(MyEguiApp::new(cc)))),
         );
+    } else {
+        println!("...run console");
     }
 }
 
@@ -42,26 +47,26 @@ struct MyEguiApp {
     log_lines: String,
     window_help_open: bool,
     window_about_open: bool,
+    a: u32,
+    b: u32,
 }
 
 impl MyEguiApp {
     fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        // Customize egui here with cc.egui_ctx.set_fonts and cc.egui_ctx.set_visuals.
-        // Restore app state using cc.storage (requires the "persistence" feature).
-        // Use the cc.gl (a glow::Context) to create graphics shaders and buffers that you can use
-        // for e.g. egui::PaintCallback.
         Self::default()
+    }
+    fn add(&self) -> u32 {
+        self.a + self.b
+    }
+
+    fn get_config(&self) -> AppConfig {
+        let config = get_config();
+        return config;
     }
 }
 
 impl eframe::App for MyEguiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        /*
-        self.host = env!("host").to_string();
-        self.database = env!("database").to_string();
-        self.user = env!("user").to_string();
-        self.password = env!("password").to_string();
-        */
         if self.window_help_open {
             egui::Window::new("Help")
                 .open(&mut self.window_help_open)
@@ -81,7 +86,7 @@ impl eframe::App for MyEguiApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.add_space(20.0);
 
-            ui.heading("Couchy");
+            //ui.heading("Couchy");
 
             ui.label("Host".to_string());
             let _database = ui.add(
@@ -116,7 +121,11 @@ impl eframe::App for MyEguiApp {
             );
 
             if ui.button("Connect").clicked() {
-                self.log_lines = "xxxxxxxxx".to_string();
+                let config = self.get_config();
+                self.host = config.host;
+                self.user = config.user;
+                self.database = config.database;
+                self.password = config.password;
             }
 
             ui.label("Log".to_string());
@@ -126,9 +135,23 @@ impl eframe::App for MyEguiApp {
             );
         });
 
-        //https://docs.rs/egui/latest/egui/struct.Ui.html
+        // https://docs.rs/egui/latest/egui/struct.Ui.html
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
+                ui.menu_button("Couchy", |ui| {
+                    if ui.button("About Couchy").clicked() {
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("Settings").clicked() {
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("Quit Couchy").clicked() {
+                        std::process::abort();
+                    }
+                });
+
                 ui.menu_button("Commands", |ui| {
                     if ui.button("Save All Views").clicked() {
                         ui.close_menu();
@@ -156,15 +179,7 @@ impl eframe::App for MyEguiApp {
                         self.window_help_open = true;
                         ui.close_menu();
                     }
-                    if ui.button("About").clicked() {
-                        self.window_about_open = true;
-                        ui.close_menu();
-                    }
                 });
-                if ui.button("Exit").clicked() {
-                    self.log_lines = "close".to_string();
-                    std::process::abort();
-                }
             })
         });
     }
