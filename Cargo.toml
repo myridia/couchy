@@ -16,5 +16,13 @@ homedir = "*"
 
 serde = { version = "*", features = ["derive"] }
 toml = "*"
+json = "*"
+
+couch_rs = {version ="*"}
+serde_json = "*"
+futures = "*"
+async-std = {version = "*", features = ["attributes"]}
 
 
+tokio = { version = "*", features = ["macros", "rt-multi-thread"] }
+tokio-macros = { version = "0.2.0-alpha.6" }

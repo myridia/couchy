@@ -46,7 +46,7 @@ impl From<toml::de::Error> for ConfigError {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct AppConfig {
     pub host: String,
     pub user: String,
@@ -70,7 +70,7 @@ fn load_or_initialize() -> Result<AppConfig, ConfigError> {
     let home = my_home().unwrap().unwrap();
     let _config_path = &format!("{0}/config.toml", home.display());
     let config_path = Path::new(_config_path);
-    println!("{:?}", config_path);
+    //println!("{:?}", config_path);
     if config_path.exists() {
         let content = fs::read_to_string(config_path)?;
         let config = toml::from_str(&content)?;
@@ -80,7 +80,7 @@ fn load_or_initialize() -> Result<AppConfig, ConfigError> {
 
     // The config file does not exist, so we must initialize it with the default values.
 
-    let config = AppConfig::default();
+    let mut config = AppConfig::default();
     let toml = toml::to_string(&config).unwrap();
 
     fs::write(config_path, toml)?;

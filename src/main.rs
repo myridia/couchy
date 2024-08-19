@@ -1,19 +1,23 @@
 use clap::Parser;
-//use couchy::view::*;
 use couchy::config::get_config;
 use couchy::config::AppConfig;
+use couchy::view::*;
 use eframe::egui;
 
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
+#[command(author, version, about, long_about = None)]
 struct Args {
-    /// Name of the person to greet
     #[arg(short, long, default_value_t = 0)]
     nox: u8,
+    #[arg(short, long, default_value = "none")]
+    save: String,
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args = Args::parse();
+
+    //println!("{:?}", args);
 
     if args.nox != 1 {
         let native_options = eframe::NativeOptions::default();
@@ -30,6 +34,12 @@ fn main() {
         );
     } else {
         println!("...run console");
+        let config = get_config();
+        if args.save == "all_design" {
+            save_all_design(&config).await;
+        } else if args.save == "all_server_design" {
+            save_all_server_design(&config).await;
+        }
     }
 }
 

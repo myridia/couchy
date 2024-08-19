@@ -1,0 +1,1 @@
+{"_id":"_design/av0_style","language":"javascript","views":{"av0_style":{"map":"function (doc) {\n  emit(doc.av0_style, doc._rev);\n}"}}}
