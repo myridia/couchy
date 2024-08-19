@@ -3,11 +3,6 @@ use clap::Parser;
 use couchy::config::get_config;
 use couchy::config::AppConfig;
 use eframe::egui;
-use homedir::my_home;
-use serde::{Deserialize, Serialize};
-use std::fs;
-use std::io;
-use std::path::Path;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -28,7 +23,7 @@ fn main() {
                 ..Default::default()
         };
          */
-        eframe::run_native(
+        let _loop = eframe::run_native(
             "Couchy",
             native_options,
             Box::new(|cc| Ok(Box::new(MyEguiApp::new(cc)))),
@@ -47,16 +42,11 @@ struct MyEguiApp {
     log_lines: String,
     window_help_open: bool,
     window_about_open: bool,
-    a: u32,
-    b: u32,
 }
 
 impl MyEguiApp {
     fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         Self::default()
-    }
-    fn add(&self) -> u32 {
-        self.a + self.b
     }
 
     fn get_config(&self) -> AppConfig {

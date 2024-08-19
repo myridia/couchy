@@ -1,3 +1,3 @@
-fn get_view() {
-    println!("...test");
-}
+//fn get_view() {
+//    println!("...test");
+//}
