@@ -1,0 +1,1 @@
+{"_id":"_design/bestseller","language":"javascript","views":{"codes":{"map":"function(doc) {\n  emit(doc.av0_code, doc.bestseller);\n}","reduce":"_sum"},"styles":{"map":"function(doc) {\n  emit(doc.av0_style, doc.bestseller);\n}"}}}

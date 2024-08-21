@@ -5,7 +5,8 @@ edition = "2021"
 
 [dependencies]
 # https://docs.rs/eframe/latest/eframe/
-eframe = "0.28.1"
+eframe = {version= "0.28.1",features = ["wgpu"]}
+#wgpu = { version = "*", features = ["webgpu", "webgl"] }
 
 # https://docs.rs/clap/latest/clap/
 clap = {version='*', features = ["cargo","derive"]}
@@ -13,6 +14,15 @@ clap = {version='*', features = ["cargo","derive"]}
 # https://docs.rs/homedir/latest/homedir/
 homedir = "*"
 
+serde = { version = "*", features = ["derive"] }
+toml = "*"
+json = "*"
+
+couch_rs = {version ="*"}
+serde_json = "*"
+futures = "*"
+async-std = {version = "*", features = ["attributes"]}
 
 
-
+tokio = { version = "*", features = ["macros", "rt-multi-thread"] }
+tokio-macros = { version = "0.2.0-alpha.6" }
