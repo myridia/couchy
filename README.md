@@ -1,4 +1,4 @@
-# couchy
+# Couchy
 Convenient Utility to get and update CouchDB data 
 * command line with gui wrapper 
 
