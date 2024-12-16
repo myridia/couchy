@@ -2,6 +2,7 @@ use crate::config::AppConfig;
 use crate::config::Args;
 use async_std::fs;
 use async_std::task;
+use couch_rs::database::Database;
 use couch_rs::error::CouchResult;
 use couch_rs::types::query::{QueriesParams, QueryParams};
 use couch_rs::Client;
@@ -9,12 +10,15 @@ extern crate json;
 use couch_rs::document::{DocumentCollection, TypedCouchDocument};
 use couch_rs::types::document::DocumentId;
 use couch_rs::types::find::FindQuery;
+use couch_rs::types::system::DbInfo;
 use couch_rs::CouchDocument;
+use eframe::wgpu::hal::auxil::db;
 use homedir::my_home;
 use serde::{Deserialize, Serialize};
 use std::borrow::Borrow;
 use std::borrow::BorrowMut;
 use std::collections::HashMap;
+
 use std::error::Error;
 
 #[derive(Serialize, Deserialize, CouchDocument)]
@@ -23,6 +27,31 @@ pub struct DocId {
     pub _id: DocumentId,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub _rev: String,
+}
+
+pub async fn get_ids(db: Database) -> Result<(HashMap<String, String>), Box<dyn Error>> {
+    let mut h: HashMap<String, String> = HashMap::new();
+    //h.insert("bookmark".to_string(), "".to_string());
+    let mut v: Vec<String> = vec!["_id".to_string(), "_rev".to_string()];
+    let mut find_all = FindQuery::find_all().limit(10000).fields(v.clone());
+    let docs = db.find_raw(&find_all).await?;
+    let mut bookmark = docs.bookmark.unwrap().clone();
+    let mut total_rows = docs.total_rows;
+    println!("{:?}", bookmark);
+    while total_rows > 0 {
+        println!("...bookmark: {}", &bookmark);
+        let mut find_all = FindQuery::find_all()
+            .limit(10000)
+            .fields(v.clone())
+            .bookmark(&bookmark);
+        let docs2 = db.find_raw(&find_all).await?;
+        println!("{:?}", docs2.clone().total_rows);
+        bookmark = docs2.clone().bookmark.unwrap().clone();
+        total_rows = docs2.clone().total_rows;
+
+        //bookmark = "none".to_string();
+    }
+    return Ok(h);
 }
 
 pub async fn delete_orphans(config: &AppConfig, args: Args) -> Result<(), Box<dyn Error>> {
@@ -34,22 +63,67 @@ pub async fn delete_orphans(config: &AppConfig, args: Args) -> Result<(), Box<dy
     println!("{:?}", args.database);
     println!("{:?}", &config.user);
     println!("{:?}", &config.password);
-    print!("xxxxxxxxxxxxxxxxxxxxxxxxxxxx");
-
-    let find_all = FindQuery::find_all().limit(0);
+    println!("xxxxxxxxxxxxxxxxxxxxxxxxxxxx");
 
     //let master = Client::new(&args.master, &config.user, &config.password)?;
     //let master_db = master.db(&args.database).await?;
     //let master_docs: DocumentCollection<DocId> = master_db.find(&find_all).await?;
 
-    let repl = Client::new(&args.repl, &config.user, &config.password)?;
-    let repl_db = repl.db(&args.database).await?;
-    let repl_docs: DocumentCollection<DocId> = repl_db.find(&find_all).await?;
+    let client = Client::new(&args.repl, &config.user, &config.password)?;
+    let db = client.db(&args.database).await?;
+    let ids = get_ids(db).await;
+    println!("{:?}", ids);
+    /*
 
-    for i in repl_docs.rows {
-        println!("{:?}", &i._id);
-        //println!("{:?}", &i._rev);
+    let info = client.get_info(&args.database).await?;
+    let number = info.doc_count;
+    let mut repl: HashMap<String, String> = HashMap::new();
+
+    let mut v: Vec<String> = vec!["_id".to_string(), "_rev".to_string()];
+    let mut find_all = FindQuery::find_all().skip(0).limit(2).fields(v.clone());
+    let docs = db.find_raw(&find_all).await?;
+    println!("{:?}", docs);
+    let mut find_all2 = FindQuery::find_all()
+        .skip(0)
+        .limit(2)
+        .fields(v)
+        .bookmark(&docs.bookmark.unwrap());
+    let docs2 = db.find_raw(&find_all2).await?;
+    println!("{:?}", docs2);
+    */
+    //println!("{:?}", &docs.bookmark);
+
+    /*
+    for i in 0..number {
+        if i % 10000 == 0 || i == 0 {
+            println!("{0}/{1}", i, number - i);
+
+            /*
+            let docs: DocumentCollection<DocId> = db.find(&find_all).await?;
+            for i in docs.rows {
+                //println!("{:?}", &i._id);
+                //println!("{:?}", &i._rev);
+                repl.insert(i._id, i._rev);
+            }
+            */
+            //break;
+        }
     }
+    println!("{:?}", repl);
+    */
+    //let db = client.db(&args.database).await?;
+
+    /*
+    let docs: DocumentCollection<DocId> = db.find(&find_all).await?;
+
+
+    */
+    //println!("{:?}", repl_db.get);
+
+    //for i in repl_docs.rows {
+    //    println!("{:?}", &i._id);
+    //    //println!("{:?}", &i._rev);
+    //}
 
     Ok(())
 }
