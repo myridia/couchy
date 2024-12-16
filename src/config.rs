@@ -1,8 +1,26 @@
+use clap::Parser;
 use homedir::my_home;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 use std::path::Path;
+
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+pub struct Args {
+    #[arg(short, long, default_value_t = 0)]
+    pub nox: u8,
+    #[arg(short, long, default_value = "none")]
+    pub save: String,
+    #[arg(short, long, default_value = "none")]
+    pub delete: String,
+    #[arg(short = 'm', long, default_value = "none")]
+    pub master: String,
+    #[arg(short = 'r', long, default_value = "none")]
+    pub database: String,
+    #[arg(short = 'b', long, default_value = "none")]
+    pub repl: String,
+}
 
 pub fn get_config() -> AppConfig {
     let config = match load_or_initialize() {
