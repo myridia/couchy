@@ -37,18 +37,22 @@ pub async fn get_ids(db: Database) -> Result<(HashMap<String, String>), Box<dyn 
     let docs = db.find_raw(&find_all).await?;
     let mut bookmark = docs.bookmark.unwrap().clone();
     let mut total_rows = docs.total_rows;
-    println!("{:?}", bookmark);
+    //println!("{:?}", bookmark);
     while total_rows > 0 {
-        println!("...bookmark: {}", &bookmark);
+        //println!("...bookmark: {}", &bookmark);
         let mut find_all = FindQuery::find_all()
             .limit(10000)
             .fields(v.clone())
             .bookmark(&bookmark);
         let docs2 = db.find_raw(&find_all).await?;
-        println!("{:?}", docs2.clone().total_rows);
+        //println!("{:?}", docs2.clone().total_rows);
         bookmark = docs2.clone().bookmark.unwrap().clone();
         total_rows = docs2.clone().total_rows;
-
+        for i in docs2.rows {
+            //println!("{}", i["_id"]);
+            //println!("{}", i["_rev"]);
+            h.insert(i["_id"].to_string(), i["_rev"].to_string());
+        }
         //bookmark = "none".to_string();
     }
     return Ok(h);
@@ -69,10 +73,17 @@ pub async fn delete_orphans(config: &AppConfig, args: Args) -> Result<(), Box<dy
     //let master_db = master.db(&args.database).await?;
     //let master_docs: DocumentCollection<DocId> = master_db.find(&find_all).await?;
 
+    /*
     let client = Client::new(&args.repl, &config.user, &config.password)?;
     let db = client.db(&args.database).await?;
-    let ids = get_ids(db).await;
-    println!("{:?}", ids);
+    let repl_docs = get_ids(db).await;
+    */
+    let client = Client::new(&args.master, &config.user, &config.password)?;
+    let db = client.db(&args.database).await?;
+    let master_docs = get_ids(db).await;
+
+    //println!("{:?}", repl_docs.unwrap().keys().count());
+    println!("{:?}", master_docs.unwrap().keys().count());
     /*
 
     let info = client.get_info(&args.database).await?;
