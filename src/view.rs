@@ -15,12 +15,13 @@ use couch_rs::CouchDocument;
 use eframe::wgpu::hal::auxil::db;
 use homedir::my_home;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
+use serde_json::{from_value, to_value, Value};
 use std::borrow::Borrow;
 use std::borrow::BorrowMut;
 use std::collections::HashMap;
-
 use std::error::Error;
-
+use unescape::unescape;
 #[derive(Serialize, Deserialize, CouchDocument)]
 pub struct DocId {
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -29,31 +30,45 @@ pub struct DocId {
     pub _rev: String,
 }
 
-pub async fn get_ids(db: Database) -> Result<(HashMap<String, String>), Box<dyn Error>> {
+pub async fn get_ids(
+    db: Database,
+    total: u64,
+) -> Result<(HashMap<String, String>), Box<dyn Error>> {
+    let limit = 1000;
     let mut h: HashMap<String, String> = HashMap::new();
     //h.insert("bookmark".to_string(), "".to_string());
     let mut v: Vec<String> = vec!["_id".to_string(), "_rev".to_string()];
-    let mut find_all = FindQuery::find_all().limit(10000).fields(v.clone());
+    let mut find_all = FindQuery::find_all().limit(limit).fields(v.clone());
     let docs = db.find_raw(&find_all).await?;
+    for i in docs.rows {
+        let _id = i["_id"].as_str().unwrap();
+        let _rev = i["_rev"].as_str().unwrap();
+        h.insert(_id.to_string(), _rev.to_string());
+    }
+
     let mut bookmark = docs.bookmark.unwrap().clone();
-    let mut total_rows = docs.total_rows;
-    //println!("{:?}", bookmark);
+    let mut total_rows = docs.total_rows.clone();
+    let mut sum = 0;
+    //println!("{:?}", &total_rows);
+
     while total_rows > 0 {
+        sum = sum + total_rows;
+
         //println!("...bookmark: {}", &bookmark);
         let mut find_all = FindQuery::find_all()
-            .limit(10000)
+            .limit(limit)
             .fields(v.clone())
             .bookmark(&bookmark);
         let docs2 = db.find_raw(&find_all).await?;
-        //println!("{:?}", docs2.clone().total_rows);
         bookmark = docs2.clone().bookmark.unwrap().clone();
         total_rows = docs2.clone().total_rows;
+        println!("{0}/{1} - {2}", sum, total, total_rows);
+
         for i in docs2.rows {
-            //println!("{}", i["_id"]);
-            //println!("{}", i["_rev"]);
-            h.insert(i["_id"].to_string(), i["_rev"].to_string());
+            let _id = i["_id"].as_str().unwrap();
+            let _rev = i["_rev"].as_str().unwrap();
+            h.insert(_id.to_string(), _rev.to_string());
         }
-        //bookmark = "none".to_string();
     }
     return Ok(h);
 }
@@ -62,79 +77,47 @@ pub async fn delete_orphans(config: &AppConfig, args: Args) -> Result<(), Box<dy
     println!("...save_all_server_design fn");
 
     println!("xxxxxxxxxxxxxxxxxxxxxxxxxxxx");
-    println!("{:?}", args.master);
-    println!("{:?}", args.repl);
-    println!("{:?}", args.database);
-    println!("{:?}", &config.user);
-    println!("{:?}", &config.password);
+    println!("master: {}", args.master);
+    println!("repl: {}", args.repl);
+    println!("db: {}", args.database);
+    println!("user: {}", &config.user);
+    println!("pass:{}", &config.password);
     println!("xxxxxxxxxxxxxxxxxxxxxxxxxxxx");
 
-    //let master = Client::new(&args.master, &config.user, &config.password)?;
-    //let master_db = master.db(&args.database).await?;
-    //let master_docs: DocumentCollection<DocId> = master_db.find(&find_all).await?;
-
-    /*
-    let client = Client::new(&args.repl, &config.user, &config.password)?;
-    let db = client.db(&args.database).await?;
-    let repl_docs = get_ids(db).await;
-    */
     let client = Client::new(&args.master, &config.user, &config.password)?;
+    let number = client.get_info(&args.database).await?.doc_count;
     let db = client.db(&args.database).await?;
-    let master_docs = get_ids(db).await;
+    let master_docs = get_ids(db, number).await?;
 
-    //println!("{:?}", repl_docs.unwrap().keys().count());
-    println!("{:?}", master_docs.unwrap().keys().count());
-    /*
+    let client2 = Client::new(&args.repl, &config.user, &config.password)?;
+    let db2 = client2.db(&args.database).await?;
+    let number = client2.get_info(&args.database).await?.doc_count;
+    let repl_docs = get_ids(db2.clone(), number).await?;
 
-    let info = client.get_info(&args.database).await?;
-    let number = info.doc_count;
-    let mut repl: HashMap<String, String> = HashMap::new();
+    //  println!("repl docs: {}", &repl_docs.unwrap().keys().count());
+    //    println!("master docs: {}", &master_docs.unwrap().keys().count());
 
-    let mut v: Vec<String> = vec!["_id".to_string(), "_rev".to_string()];
-    let mut find_all = FindQuery::find_all().skip(0).limit(2).fields(v.clone());
-    let docs = db.find_raw(&find_all).await?;
-    println!("{:?}", docs);
-    let mut find_all2 = FindQuery::find_all()
-        .skip(0)
-        .limit(2)
-        .fields(v)
-        .bookmark(&docs.bookmark.unwrap());
-    let docs2 = db.find_raw(&find_all2).await?;
-    println!("{:?}", docs2);
-    */
-    //println!("{:?}", &docs.bookmark);
+    for (k, v) in &repl_docs {
+        if !master_docs.contains_key(k) {
+            //let _d: Value = db2.get(k).await?;
+            //println!("{:?}", _d);
+            let _id = unescape(&k).unwrap();
+            let _rev = unescape(&v).unwrap();
 
-    /*
-    for i in 0..number {
-        if i % 10000 == 0 || i == 0 {
-            println!("{0}/{1}", i, number - i);
-
-            /*
-            let docs: DocumentCollection<DocId> = db.find(&find_all).await?;
-            for i in docs.rows {
-                //println!("{:?}", &i._id);
-                //println!("{:?}", &i._rev);
-                repl.insert(i._id, i._rev);
+            if let Some(doc) = db2.get::<Value>(&_id).await.ok() {
+                db2.remove(&doc).await;
             }
+
+            println!("Delete k: {} v: {} ", _id, _rev);
+            /*
+            let mut doc = json!({});
+            doc.set_id(&_id);
+            doc.set_rev(&_rev);
+            println!("{:?}", doc);
+            let b = db2.remove(&doc).await;
             */
-            //break;
         }
     }
-    println!("{:?}", repl);
-    */
-    //let db = client.db(&args.database).await?;
-
-    /*
-    let docs: DocumentCollection<DocId> = db.find(&find_all).await?;
-
-
-    */
-    //println!("{:?}", repl_db.get);
-
-    //for i in repl_docs.rows {
-    //    println!("{:?}", &i._id);
-    //    //println!("{:?}", &i._rev);
-    //}
 
     Ok(())
 }
