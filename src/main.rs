@@ -5,7 +5,7 @@ use couchy::config::Args;
 use couchy::view::*;
 use eframe::egui;
 use std::error::Error;
-use tokio::runtime::Runtime;
+//use tokio::runtime::Runtime;
 
 #[tokio::main]
 async fn main() {
@@ -30,12 +30,12 @@ async fn main() {
         println!("...run console");
         let config = get_config();
         if args.save == "all_design" {
-            save_all_design(&config).await;
+            let _r = save_all_design(&config).await;
         } else if args.save == "all_server_design" {
-            save_all_server_design(&config).await;
+            let _r = save_all_server_design(&config).await;
         } else if args.delete == "orphans" {
-            println!("...delete orphans");
-            delete_orphans(&config, args).await;
+            //println!("...delete orphans");
+            let _r = delete_orphans(&config, args).await;
         }
     }
 }
@@ -62,12 +62,12 @@ impl MyEguiApp {
         return config;
     }
 
-    fn perform(log_lines: String, ctx: egui::Context) -> Result<(), Box<dyn Error>> {
+    fn perform(_log_lines: String, _ctx: egui::Context) -> Result<(), Box<dyn Error>> {
         // call async from egui https://github.com/veto8/egui-tokio-example/blob/main/src/main.rs
         tokio::spawn(async move {
             let config = get_config();
             println!("...perform");
-            save_all_server_design(&config).await;
+            let _r = save_all_server_design(&config).await;
         });
         Ok(())
     }
@@ -130,7 +130,7 @@ impl eframe::App for MyEguiApp {
 
             if ui.button("Perform").clicked() {
                 self.log_lines = self.window_name.to_string();
-                let config = MyEguiApp::perform(self.log_lines.clone(), ctx.clone());
+                let _config = MyEguiApp::perform(self.log_lines.clone(), ctx.clone());
                 //                save_all_server_design(&config).await;
             }
 

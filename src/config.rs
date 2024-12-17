@@ -92,13 +92,12 @@ fn load_or_initialize() -> Result<AppConfig, ConfigError> {
     if config_path.exists() {
         let content = fs::read_to_string(config_path)?;
         let config = toml::from_str(&content)?;
-
         return Ok(config);
     }
 
     // The config file does not exist, so we must initialize it with the default values.
 
-    let mut config = AppConfig::default();
+    let config = AppConfig::default();
     let toml = toml::to_string(&config).unwrap();
 
     fs::write(config_path, toml)?;

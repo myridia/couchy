@@ -1,44 +1,25 @@
 use crate::config::AppConfig;
 use crate::config::Args;
 use async_std::fs;
-use async_std::task;
 use couch_rs::database::Database;
-use couch_rs::error::CouchResult;
 use couch_rs::types::query::{QueriesParams, QueryParams};
 use couch_rs::Client;
 extern crate json;
-use couch_rs::document::{DocumentCollection, TypedCouchDocument};
-use couch_rs::types::document::DocumentId;
+use couch_rs::document::TypedCouchDocument;
 use couch_rs::types::find::FindQuery;
-use couch_rs::types::system::DbInfo;
-use couch_rs::CouchDocument;
-use eframe::wgpu::hal::auxil::db;
 use homedir::my_home;
-use serde::{Deserialize, Serialize};
 use serde_json::json;
-use serde_json::{from_value, to_value, Value};
-use std::borrow::Borrow;
-use std::borrow::BorrowMut;
+
 use std::collections::HashMap;
 use std::error::Error;
-use unescape::unescape;
-#[derive(Serialize, Deserialize, CouchDocument)]
-pub struct DocId {
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub _id: DocumentId,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub _rev: String,
-}
 
-pub async fn get_ids(
-    db: Database,
-    total: u64,
-) -> Result<(HashMap<String, String>), Box<dyn Error>> {
+// https://docs.rs/couch_rs/latest/couch_rs/database/struct.Database.html#method.remove
+
+pub async fn get_ids(db: Database, total: u64) -> Result<HashMap<String, String>, Box<dyn Error>> {
     let limit = 1000;
     let mut h: HashMap<String, String> = HashMap::new();
-    //h.insert("bookmark".to_string(), "".to_string());
-    let mut v: Vec<String> = vec!["_id".to_string(), "_rev".to_string()];
-    let mut find_all = FindQuery::find_all().limit(limit).fields(v.clone());
+    let v: Vec<String> = vec!["_id".to_string(), "_rev".to_string()];
+    let find_all = FindQuery::find_all().limit(limit).fields(v.clone());
     let docs = db.find_raw(&find_all).await?;
     for i in docs.rows {
         let _id = i["_id"].as_str().unwrap();
@@ -55,7 +36,7 @@ pub async fn get_ids(
         sum = sum + total_rows;
 
         //println!("...bookmark: {}", &bookmark);
-        let mut find_all = FindQuery::find_all()
+        let find_all = FindQuery::find_all()
             .limit(limit)
             .fields(v.clone())
             .bookmark(&bookmark);
@@ -101,21 +82,13 @@ pub async fn delete_orphans(config: &AppConfig, args: Args) -> Result<(), Box<dy
         if !master_docs.contains_key(k) {
             //let _d: Value = db2.get(k).await?;
             //println!("{:?}", _d);
-            let _id = unescape(&k).unwrap();
-            let _rev = unescape(&v).unwrap();
-
-            if let Some(doc) = db2.get::<Value>(&_id).await.ok() {
-                db2.remove(&doc).await;
-            }
-
-            println!("Delete k: {} v: {} ", _id, _rev);
-            /*
+            println!("Delete k: {} v: {} ", k, v);
             let mut doc = json!({});
-            doc.set_id(&_id);
-            doc.set_rev(&_rev);
-            println!("{:?}", doc);
+            doc.set_id(&k);
+            doc.set_rev(&v);
+            //println!("{:?}", doc);
             let b = db2.remove(&doc).await;
-            */
+            println!("...delete: {}", b);
         }
     }
 
@@ -134,7 +107,7 @@ pub async fn save_all_server_design(config: &AppConfig) -> Result<(), Box<dyn Er
             //let new_config = config.borrow().clone();
             println!("...Database: {}", config2.database);
 
-            save_all_design(&config2).await;
+            let _r = save_all_design(&config2).await;
         }
     }
     Ok(())
@@ -162,7 +135,7 @@ pub async fn save_all_design(config: &AppConfig) -> Result<(), Box<dyn Error>> {
         let a = collections.next().unwrap();
 
         for i in a.rows.clone() {
-            let mut doc = i.doc.unwrap();
+            let doc = i.doc.unwrap();
             let mut j = json::parse(&doc.to_string()).unwrap();
             j.remove("_rev");
 
@@ -174,7 +147,7 @@ pub async fn save_all_design(config: &AppConfig) -> Result<(), Box<dyn Error>> {
             );
             let data = j.dump();
             println!("...save {0}", filename);
-            fs::write(filename, data).await;
+            let _r = fs::write(filename, data).await;
         }
     }
     //return codes;
