@@ -1,15 +1,99 @@
 use crate::config::AppConfig;
+use crate::config::Args;
 use async_std::fs;
-use async_std::task;
-use couch_rs::error::CouchResult;
+use couch_rs::database::Database;
 use couch_rs::types::query::{QueriesParams, QueryParams};
 use couch_rs::Client;
 extern crate json;
+use couch_rs::document::TypedCouchDocument;
+use couch_rs::types::find::FindQuery;
 use homedir::my_home;
-use std::borrow::Borrow;
-use std::borrow::BorrowMut;
+use serde_json::json;
+
 use std::collections::HashMap;
 use std::error::Error;
+
+// https://docs.rs/couch_rs/latest/couch_rs/database/struct.Database.html#method.remove
+
+pub async fn get_ids(db: Database, total: u64) -> Result<HashMap<String, String>, Box<dyn Error>> {
+    let limit = 1000;
+    let mut h: HashMap<String, String> = HashMap::new();
+    let v: Vec<String> = vec!["_id".to_string(), "_rev".to_string()];
+    let find_all = FindQuery::find_all().limit(limit).fields(v.clone());
+    let docs = db.find_raw(&find_all).await?;
+    for i in docs.rows {
+        let _id = i["_id"].as_str().unwrap();
+        let _rev = i["_rev"].as_str().unwrap();
+        h.insert(_id.to_string(), _rev.to_string());
+    }
+
+    let mut bookmark = docs.bookmark.unwrap().clone();
+    let mut total_rows = docs.total_rows.clone();
+    let mut sum = 0;
+    //println!("{:?}", &total_rows);
+
+    while total_rows > 0 {
+        sum = sum + total_rows;
+
+        //println!("...bookmark: {}", &bookmark);
+        let find_all = FindQuery::find_all()
+            .limit(limit)
+            .fields(v.clone())
+            .bookmark(&bookmark);
+        let docs2 = db.find_raw(&find_all).await?;
+        bookmark = docs2.clone().bookmark.unwrap().clone();
+        total_rows = docs2.clone().total_rows;
+        println!("{0}/{1} - {2}", sum, total, total_rows);
+
+        for i in docs2.rows {
+            let _id = i["_id"].as_str().unwrap();
+            let _rev = i["_rev"].as_str().unwrap();
+            h.insert(_id.to_string(), _rev.to_string());
+        }
+    }
+    return Ok(h);
+}
+
+pub async fn delete_orphans(config: &AppConfig, args: Args) -> Result<(), Box<dyn Error>> {
+    println!("...save_all_server_design fn");
+
+    println!("xxxxxxxxxxxxxxxxxxxxxxxxxxxx");
+    println!("master: {}", args.master);
+    println!("repl: {}", args.repl);
+    println!("db: {}", args.database);
+    println!("user: {}", &config.user);
+    println!("pass:{}", &config.password);
+    println!("xxxxxxxxxxxxxxxxxxxxxxxxxxxx");
+
+    let client = Client::new(&args.master, &config.user, &config.password)?;
+    let number = client.get_info(&args.database).await?.doc_count;
+    let db = client.db(&args.database).await?;
+    let master_docs = get_ids(db, number).await?;
+
+    let client2 = Client::new(&args.repl, &config.user, &config.password)?;
+    let db2 = client2.db(&args.database).await?;
+    let number = client2.get_info(&args.database).await?.doc_count;
+    let repl_docs = get_ids(db2.clone(), number).await?;
+
+    //  println!("repl docs: {}", &repl_docs.unwrap().keys().count());
+    //    println!("master docs: {}", &master_docs.unwrap().keys().count());
+
+    for (k, v) in &repl_docs {
+        if !master_docs.contains_key(k) {
+            //let _d: Value = db2.get(k).await?;
+            //println!("{:?}", _d);
+            println!("Delete k: {} v: {} ", k, v);
+            let mut doc = json!({});
+            doc.set_id(&k);
+            doc.set_rev(&v);
+            //println!("{:?}", doc);
+            let b = db2.remove(&doc).await;
+            println!("...delete: {}", b);
+        }
+    }
+
+    Ok(())
+}
 
 pub async fn save_all_server_design(config: &AppConfig) -> Result<(), Box<dyn Error>> {
     print!("...save_all_server_design fn");
@@ -23,7 +107,7 @@ pub async fn save_all_server_design(config: &AppConfig) -> Result<(), Box<dyn Er
             //let new_config = config.borrow().clone();
             println!("...Database: {}", config2.database);
 
-            save_all_design(&config2).await;
+            let _r = save_all_design(&config2).await;
         }
     }
     Ok(())
@@ -51,7 +135,7 @@ pub async fn save_all_design(config: &AppConfig) -> Result<(), Box<dyn Error>> {
         let a = collections.next().unwrap();
 
         for i in a.rows.clone() {
-            let mut doc = i.doc.unwrap();
+            let doc = i.doc.unwrap();
             let mut j = json::parse(&doc.to_string()).unwrap();
             j.remove("_rev");
 
@@ -63,7 +147,7 @@ pub async fn save_all_design(config: &AppConfig) -> Result<(), Box<dyn Error>> {
             );
             let data = j.dump();
             println!("...save {0}", filename);
-            fs::write(filename, data).await;
+            let _r = fs::write(filename, data).await;
         }
     }
     //return codes;

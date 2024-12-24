@@ -1,8 +1,26 @@
+use clap::Parser;
 use homedir::my_home;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 use std::path::Path;
+
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+pub struct Args {
+    #[arg(short, long, default_value_t = 0)]
+    pub nox: u8,
+    #[arg(short, long, default_value = "none")]
+    pub save: String,
+    #[arg(short, long, default_value = "none")]
+    pub delete: String,
+    #[arg(short = 'm', long, default_value = "none")]
+    pub master: String,
+    #[arg(short = 'r', long, default_value = "none")]
+    pub database: String,
+    #[arg(short = 'b', long, default_value = "none")]
+    pub repl: String,
+}
 
 pub fn get_config() -> AppConfig {
     let config = match load_or_initialize() {
@@ -74,13 +92,12 @@ fn load_or_initialize() -> Result<AppConfig, ConfigError> {
     if config_path.exists() {
         let content = fs::read_to_string(config_path)?;
         let config = toml::from_str(&content)?;
-
         return Ok(config);
     }
 
     // The config file does not exist, so we must initialize it with the default values.
 
-    let mut config = AppConfig::default();
+    let config = AppConfig::default();
     let toml = toml::to_string(&config).unwrap();
 
     fs::write(config_path, toml)?;

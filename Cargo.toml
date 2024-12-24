@@ -17,6 +17,7 @@ homedir = "*"
 serde = { version = "*", features = ["derive"] }
 toml = "*"
 json = "*"
+unescape = "*"
 
 couch_rs = {version ="*"}
 serde_json = "*"
