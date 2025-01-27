@@ -77,7 +77,23 @@ jobs:
           file_glob: true
           
 
-        
+      - name: Upload Linux Binary to release
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: 'target/x86_64-unknown-linux-gnu/release/hello_rust_linux'
+          tag: ${{ github.ref }}
+          overwrite: true
+          file_glob: true
+
+      - name: Upload Windows Binary to release
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: 'target/x86_64-pc-windows-gnu/release/hello_rust_windows.exe'
+          tag: ${{ github.ref }}
+          overwrite: true
+          file_glob: true     
    
 
 
