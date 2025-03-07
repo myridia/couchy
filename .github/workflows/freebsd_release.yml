@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   build_freebsd:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     name: A job to run FreeBSD
     env:
       MYTOKEN : ${{ secrets.MYTOKEN }}
