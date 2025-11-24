@@ -84,9 +84,6 @@ pub async fn delete_orphans(config: &AppConfig, args: Args) -> Result<(), Box<dy
     let number = client2.get_info(&args.db).await?.doc_count;
     let repl_docs = get_ids(db2.clone(), number).await?;
 
-    //  println!("repl docs: {}", &repl_docs.unwrap().keys().count());
-    //    println!("master docs: {}", &master_docs.unwrap().keys().count());
-
     for (k, v) in &repl_docs {
         if !master_docs.contains_key(k) {
             //let _d: Value = db2.get(k).await?;
@@ -105,16 +102,19 @@ pub async fn delete_orphans(config: &AppConfig, args: Args) -> Result<(), Box<dy
 }
 
 pub async fn worker(db: Database, docs: Vec<Vec<String>>) -> Result<(), Box<dyn Error>> {
+    let total = docs.len();
+    //println!("worker received {}x delete requests", docs.len());
+    let mut c = total;
+    let mut v: Vec<Value> = Vec::new();
     for i in docs {
-        let doc = json!({"_id":i[0],"_rev":i[1]});
-        let r = db.remove(&doc).await;
-        //println!("{:?}", doc);
+        let doc = json!({"_id":i[0],"_rev":i[1],"_deleted":true});
+        println!("{0}/{1}", total, c);
+        //v.push(doc.clone());
+        db.remove(&doc);
+        c -= 1;
     }
-
-    //docs.push(doc.clone());
-    //doc.set_id(&_id);
-    //doc.set_rev(&_rev);
-
+    //let r = db.bulk_docs(&mut v).await;
+    //println!("{:?}", r);
     Ok(())
 }
 pub async fn delete_by_key(config: &AppConfig, args: Args) -> Result<(), Box<dyn Error>> {
@@ -142,7 +142,7 @@ pub async fn delete_by_key(config: &AppConfig, args: Args) -> Result<(), Box<dyn
     //let find = FindQuery::new(selectors).fields(fields).limit(40000);
     let find = FindQuery::new(selectors).fields(fields);
 
-    let r = db.find_batched(find, tx, 100, 1000000).await;
+    let r = db.find_batched(find, tx, 10, 100).await;
     let mut c = 0;
     let db2 = client.db(&args.db).await?;
     let mut chunks: Vec<Vec<Vec<String>>> = Vec::new();
@@ -160,9 +160,13 @@ pub async fn delete_by_key(config: &AppConfig, args: Args) -> Result<(), Box<dyn
     }
 
     let mut futures = vec![worker(db2.clone(), chunks[0].clone())];
+    c = 0;
     for i in chunks {
-        let t = worker(db2.clone(), i);
-        futures.push(t);
+        if c > 0 {
+            let t = worker(db2.clone(), i);
+            futures.push(t);
+        }
+        c += 1;
     }
     join_all(futures).await;
     println!("....finished");
