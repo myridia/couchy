@@ -1,14 +1,23 @@
 use crate::config::AppConfig;
 use crate::config::Args;
 use async_std::fs;
+use couch_rs::Client;
 use couch_rs::database::Database;
 use couch_rs::types::query::{QueriesParams, QueryParams};
-use couch_rs::Client;
 extern crate json;
+use couch_rs::document::DocumentCollection;
 use couch_rs::document::TypedCouchDocument;
 use couch_rs::types::find::FindQuery;
+use futures::future::join_all;
 use homedir::my_home;
+use serde_json::Value;
 use serde_json::json;
+use std::thread;
+
+use tokio::sync::{
+    mpsc,
+    mpsc::{Receiver, Sender},
+};
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -58,21 +67,21 @@ pub async fn delete_orphans(config: &AppConfig, args: Args) -> Result<(), Box<dy
     println!("...save_all_server_design fn");
 
     println!("xxxxxxxxxxxxxxxxxxxxxxxxxxxx");
-    println!("master: {}", args.master);
-    println!("repl: {}", args.repl);
-    println!("db: {}", args.database);
+    println!("key: {}", args.key);
+    println!("value:: {}", args.value);
+    println!("db: {}", args.db);
     println!("user: {}", &config.user);
     println!("pass:{}", &config.password);
     println!("xxxxxxxxxxxxxxxxxxxxxxxxxxxx");
 
     let client = Client::new(&args.master, &config.user, &config.password)?;
-    let number = client.get_info(&args.database).await?.doc_count;
-    let db = client.db(&args.database).await?;
+    let number = client.get_info(&args.db).await?.doc_count;
+    let db = client.db(&args.db).await?;
     let master_docs = get_ids(db, number).await?;
 
     let client2 = Client::new(&args.repl, &config.user, &config.password)?;
-    let db2 = client2.db(&args.database).await?;
-    let number = client2.get_info(&args.database).await?.doc_count;
+    let db2 = client2.db(&args.db).await?;
+    let number = client2.get_info(&args.db).await?.doc_count;
     let repl_docs = get_ids(db2.clone(), number).await?;
 
     //  println!("repl docs: {}", &repl_docs.unwrap().keys().count());
@@ -88,10 +97,75 @@ pub async fn delete_orphans(config: &AppConfig, args: Args) -> Result<(), Box<dy
             doc.set_rev(&v);
             //println!("{:?}", doc);
             let b = db2.remove(&doc).await;
-            println!("...delete: {}", b);
+            println!("...delete: {:?}", b);
         }
     }
 
+    Ok(())
+}
+
+pub async fn worker(db: Database, docs: Vec<Vec<String>>) -> Result<(), Box<dyn Error>> {
+    for i in docs {
+        let doc = json!({"_id":i[0],"_rev":i[1]});
+        let r = db.remove(&doc).await;
+        //println!("{:?}", doc);
+    }
+
+    //docs.push(doc.clone());
+    //doc.set_id(&_id);
+    //doc.set_rev(&_rev);
+
+    Ok(())
+}
+pub async fn delete_by_key(config: &AppConfig, args: Args) -> Result<(), Box<dyn Error>> {
+    println!("...delete by key fn");
+
+    println!("xxxxxxxxxxxxxxxxxxxxxxxxxxxx");
+    println!("key: {}", args.key);
+    println!("value: {}", args.value);
+    println!("db: {}", args.db);
+    println!("user: {}", &config.user);
+    println!("pass:{}", &config.password);
+    println!("xxxxxxxxxxxxxxxxxxxxxxxxxxxx");
+
+    let client = Client::new(&config.host, &config.user, &config.password)?;
+
+    let db = client.db(&args.db).await?;
+
+    let (tx, mut rx): (
+        Sender<DocumentCollection<Value>>,
+        Receiver<DocumentCollection<Value>>,
+    ) = mpsc::channel(100);
+
+    let selectors = json!({ "logger": "API3"});
+    let fields = vec!["_id".to_string(), "_rev".to_string()];
+    //let find = FindQuery::new(selectors).fields(fields).limit(40000);
+    let find = FindQuery::new(selectors).fields(fields);
+
+    let r = db.find_batched(find, tx, 100, 1000000).await;
+    let mut c = 0;
+    let db2 = client.db(&args.db).await?;
+    let mut chunks: Vec<Vec<Vec<String>>> = Vec::new();
+
+    while let Some(all_docs) = rx.recv().await {
+        println!("Received {} docs", all_docs.total_rows);
+        let mut docs: Vec<Vec<String>> = Vec::new();
+        for r in all_docs.rows {
+            let _id = r["_id"].as_str().unwrap().to_string();
+            let _rev = r["_rev"].as_str().unwrap().to_string();
+            let v = vec![_id, _rev];
+            docs.push(v);
+        }
+        chunks.push(docs);
+    }
+
+    let mut futures = vec![worker(db2.clone(), chunks[0].clone())];
+    for i in chunks {
+        let t = worker(db2.clone(), i);
+        futures.push(t);
+    }
+    join_all(futures).await;
+    println!("....finished");
     Ok(())
 }
 

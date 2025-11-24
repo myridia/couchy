@@ -36,7 +36,19 @@ async fn main() {
         } else if args.delete == "orphans" {
             //println!("...delete orphans");
             let _r = delete_orphans(&config, args).await;
-        }
+        } else if args.delete == "by_key" {
+            if args.db != "" && args.key != "" && args.value != "" {
+            //println!("...delete by_key");
+            //println!("db: {}",args.db);
+            //println!("key: {}",args.key);
+            //println!("value: {}",args.value);
+            //println!("value: {}",args.value);
+            let _r = delete_by_key(&config, args).await;                
+            }
+
+
+        }        
+        
     }
 }
 
