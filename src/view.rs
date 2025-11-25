@@ -107,13 +107,13 @@ pub async fn worker(db: Database, docs: Vec<Vec<String>>) -> Result<(), Box<dyn 
     let mut c = total;
     let mut v: Vec<Value> = Vec::new();
     for i in docs {
-        let doc = json!({"_id":i[0],"_rev":i[1],"_deleted":true});
-        println!("{0}/{1}", total, c);
+        let doc = json!({"_id":i[0],"_rev":i[1]});
+        println!("{0}/{1} - {2}", total, c, i[0]);
         //v.push(doc.clone());
-        db.remove(&doc);
+        db.remove(&doc).await;
         c -= 1;
     }
-    //let r = db.bulk_docs(&mut v).await;
+    //let r = db.bulk_upsert(&mut v).await;
     //println!("{:?}", r);
     Ok(())
 }
@@ -142,7 +142,7 @@ pub async fn delete_by_key(config: &AppConfig, args: Args) -> Result<(), Box<dyn
     //let find = FindQuery::new(selectors).fields(fields).limit(40000);
     let find = FindQuery::new(selectors).fields(fields);
 
-    let r = db.find_batched(find, tx, 10, 100).await;
+    let r = db.find_batched(find, tx, 10000, 1000000).await;
     let mut c = 0;
     let db2 = client.db(&args.db).await?;
     let mut chunks: Vec<Vec<Vec<String>>> = Vec::new();
