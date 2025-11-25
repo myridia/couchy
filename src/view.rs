@@ -135,14 +135,17 @@ pub async fn delete_by_key(config: &AppConfig, args: Args) -> Result<(), Box<dyn
     let (tx, mut rx): (
         Sender<DocumentCollection<Value>>,
         Receiver<DocumentCollection<Value>>,
-    ) = mpsc::channel(100);
+    ) = mpsc::channel(10000);
 
-    let selectors = json!({ "logger": "API3"});
+    let selectors = json!({ args.key: args.value});
+    println!("{:?}", selectors);
+
     let fields = vec!["_id".to_string(), "_rev".to_string()];
     //let find = FindQuery::new(selectors).fields(fields).limit(40000);
     let find = FindQuery::new(selectors).fields(fields);
-
-    let r = db.find_batched(find, tx, 10000, 1000000).await;
+    println!("{:?}", find);
+    let r = db.find_batched(find, tx, 10000, 0).await;
+    println!("{:?}", r);
     let mut c = 0;
     let db2 = client.db(&args.db).await?;
     let mut chunks: Vec<Vec<Vec<String>>> = Vec::new();
@@ -170,6 +173,7 @@ pub async fn delete_by_key(config: &AppConfig, args: Args) -> Result<(), Box<dyn
     }
     join_all(futures).await;
     println!("....finished");
+
     Ok(())
 }
 
