@@ -124,6 +124,7 @@ pub async fn delete_by_key(config: &AppConfig, args: Args) -> Result<(), Box<dyn
     println!("key: {}", args.key);
     println!("value: {}", args.value);
     println!("db: {}", args.db);
+    println!("host:{}", &config.host);
     println!("user: {}", &config.user);
     println!("pass:{}", &config.password);
     println!("xxxxxxxxxxxxxxxxxxxxxxxxxxxx");
@@ -144,7 +145,7 @@ pub async fn delete_by_key(config: &AppConfig, args: Args) -> Result<(), Box<dyn
     //let find = FindQuery::new(selectors).fields(fields).limit(40000);
     let find = FindQuery::new(selectors).fields(fields);
     println!("{:?}", find);
-    let r = db.find_batched(find, tx, 10000, 0).await;
+    let r = db.find_batched(find, tx, 10000, 10000000).await;
     println!("{:?}", r);
     let mut c = 0;
     let db2 = client.db(&args.db).await?;
