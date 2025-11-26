@@ -10,15 +10,19 @@ use std::path::Path;
 pub struct Args {
     #[arg(short, long, default_value_t = 0)]
     pub nox: u8,
-    #[arg(short, long, default_value = "none")]
+    #[arg(short, long, default_value = "")]
     pub save: String,
-    #[arg(short, long, default_value = "none")]
+    #[arg(short, long, default_value = "")]
     pub delete: String,
-    #[arg(short = 'm', long, default_value = "none")]
+    #[arg(short = 'm', long, default_value = "")]
+    pub key: String,
+    #[arg(short = 'k', long, default_value = "")]
+    pub value: String,
+    #[arg(short = 'v', long, default_value = "")]
     pub master: String,
-    #[arg(short = 'r', long, default_value = "none")]
-    pub database: String,
-    #[arg(short = 'b', long, default_value = "none")]
+    #[arg(short = 'r', long, default_value = "")]
+    pub db: String,
+    #[arg(short = 'b', long, default_value = "")]
     pub repl: String,
 }
 
@@ -38,11 +42,12 @@ pub fn get_config() -> AppConfig {
             AppConfig {
                 host: "".to_string(),
                 user: "".to_string(),
-                password: "".to_string(),
+                password: "x".to_string(),
                 database: "".to_string(),
             }
         }
     };
+    //println!("{:?}", config);
     return config;
     //    return "xxxx".to_string();
 }
@@ -88,7 +93,7 @@ fn load_or_initialize() -> Result<AppConfig, ConfigError> {
     let home = my_home().unwrap().unwrap();
     let _config_path = &format!("{0}/config.toml", home.display());
     let config_path = Path::new(_config_path);
-    //println!("{:?}", config_path);
+    println!("{:?}", config_path);
     if config_path.exists() {
         let content = fs::read_to_string(config_path)?;
         let config = toml::from_str(&content)?;
