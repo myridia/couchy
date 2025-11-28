@@ -1,7 +1,7 @@
 use clap::Parser;
-use couchy::config::get_config;
 use couchy::config::AppConfig;
 use couchy::config::Args;
+use couchy::config::get_config;
 use couchy::view::*;
 use eframe::egui;
 use std::error::Error;
@@ -38,17 +38,14 @@ async fn main() {
             let _r = delete_orphans(&config, args).await;
         } else if args.delete == "by_key" {
             if args.db != "" && args.key != "" && args.value != "" {
-            //println!("...delete by_key");
-            //println!("db: {}",args.db);
-            //println!("key: {}",args.key);
-            //println!("value: {}",args.value);
-            //println!("value: {}",args.value);
-            let _r = delete_by_key(&config, args).await;                
+                //println!("...delete by_key");
+                //println!("db: {}",args.db);
+                //println!("key: {}",args.key);
+                //println!("value: {}",args.value);
+                //println!("value: {}",args.value);
+                let _r = delete_by_key(&config, args).await;
             }
-
-
-        }        
-        
+        }
     }
 }
 

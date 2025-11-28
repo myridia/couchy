@@ -144,9 +144,9 @@ pub async fn delete_by_key(config: &AppConfig, args: Args) -> Result<(), Box<dyn
     let fields = vec!["_id".to_string(), "_rev".to_string()];
     //let find = FindQuery::new(selectors).fields(fields).limit(40000);
     let find = FindQuery::new(selectors).fields(fields).limit(1000);
-    println!("{:?}", find);
-    let r = db.find_batched(find, tx, 500, 1500000).await;
-    println!("{:?}", r);
+    println!("find: {:?}", find);
+    let r = db.find_batched(find, tx, 10, 0).await;
+    println!("ret: {:?}", r);
 
     let mut c = 0;
     let db2 = client.db(&args.db).await?;
