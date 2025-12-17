@@ -136,14 +136,14 @@ pub async fn delete_by_key(config: &AppConfig, args: Args) -> Result<(), Box<dyn
     let (tx, mut rx): (
         Sender<DocumentCollection<Value>>,
         Receiver<DocumentCollection<Value>>,
-    ) = mpsc::channel(1000);
+    ) = mpsc::channel(200);
 
     let selectors = json!({ args.key: args.value});
     println!("{:?}", selectors);
 
     let fields = vec!["_id".to_string(), "_rev".to_string()];
     //let find = FindQuery::new(selectors).fields(fields).limit(40000);
-    let find = FindQuery::new(selectors).fields(fields).limit(1000);
+    let find = FindQuery::new(selectors).fields(fields).limit(100000);
     println!("find: {:?}", find);
     let r = db.find_batched(find, tx, 10, 0).await;
     println!("ret: {:?}", r);
