@@ -136,16 +136,16 @@ pub async fn delete_by_key(config: &AppConfig, args: Args) -> Result<(), Box<dyn
     let (tx, mut rx): (
         Sender<DocumentCollection<Value>>,
         Receiver<DocumentCollection<Value>>,
-    ) = mpsc::channel(200);
+    ) = mpsc::channel(100);
 
     let selectors = json!({ args.key: args.value});
     println!("{:?}", selectors);
 
     let fields = vec!["_id".to_string(), "_rev".to_string()];
     //let find = FindQuery::new(selectors).fields(fields).limit(40000);
-    let find = FindQuery::new(selectors).fields(fields).limit(100000);
+    let find = FindQuery::new(selectors).fields(fields).limit(50000);
     println!("find: {:?}", find);
-    let r = db.find_batched(find, tx, 10, 0).await;
+    let r = db.find_batched(find, tx, 5000, 0).await;
     println!("ret: {:?}", r);
 
     let mut c = 0;
@@ -158,7 +158,9 @@ pub async fn delete_by_key(config: &AppConfig, args: Args) -> Result<(), Box<dyn
         for r in all_docs.rows {
             let _id = r["_id"].as_str().unwrap().to_string();
             let _rev = r["_rev"].as_str().unwrap().to_string();
+            println!("{}", &_id);
             let v = vec![_id, _rev];
+
             docs.push(v);
         }
         chunks.push(docs);
