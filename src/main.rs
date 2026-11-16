@@ -72,11 +72,222 @@ struct DbInfoRow {
     data_size: Option<u64>,
     disk_size: Option<u64>,
     compact_running: Option<bool>,
+    public: Option<bool>,
 }
 
 struct DocRow {
     id: String,
     rev: String,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct UserRow {
+    id: String,
+    name: String,
+    rev: String,
+    roles: String,
+    doc: serde_json::Value,
+    #[serde(default)]
+    peruser_db_exists: bool,
+    #[serde(default)]
+    public_readonly: bool,
+}
+
+async fn fetch_rev(
+    http: &reqwest::Client,
+    base: &str,
+    user: &str,
+    password: &str,
+    path: &str,
+) -> Option<String> {
+    let url = format!("{base}{path}");
+    let req = http.get(&url);
+    let req = if !user.is_empty() || !password.is_empty() {
+        req.basic_auth(user, Some(password))
+    } else {
+        req
+    };
+    match req.send().await {
+        Ok(resp) if resp.status().is_success() => {
+            let v = resp.json::<serde_json::Value>().await.ok()?;
+            v.get("_rev").and_then(|r| r.as_str()).map(|s| s.to_string())
+        }
+        _ => None,
+    }
+}
+
+async fn get_json(
+    http: &reqwest::Client,
+    base: &str,
+    user: &str,
+    password: &str,
+    path: &str,
+) -> (u16, Option<serde_json::Value>) {
+    let url = format!("{base}{path}");
+    let req = http.get(&url);
+    let req = if !user.is_empty() || !password.is_empty() {
+        req.basic_auth(user, Some(password))
+    } else {
+        req
+    };
+    match req.send().await {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            let body = resp.json::<serde_json::Value>().await.ok();
+            (status, body)
+        }
+        Err(_) => (0, None),
+    }
+}
+
+async fn put_json(
+    http: &reqwest::Client,
+    base: &str,
+    user: &str,
+    password: &str,
+    path: &str,
+    body: &str,
+) -> (u16, String) {
+    let url = format!("{base}{path}");
+    let req = http
+        .put(&url)
+        .header("Accept", "application/json")
+        .header("Content-Type", "application/json")
+        .body(body.to_string());
+    let req = if !user.is_empty() || !password.is_empty() {
+        req.basic_auth(user, Some(password))
+    } else {
+        req
+    };
+    match req.send().await {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            (status, body)
+        }
+        Err(e) => (0, e.to_string()),
+    }
+}
+
+fn json_editor(ui: &mut egui::Ui, value: &mut serde_json::Value, new_key_input: &mut String) {
+    let key_color = ui.visuals().hyperlink_color;
+    let faint = ui.visuals().faint_bg_color;
+    match value {
+        serde_json::Value::Null => {
+            ui.label(egui::RichText::new("null").monospace().italics().weak());
+        }
+        serde_json::Value::Bool(b) => {
+            ui.add(egui::Checkbox::new(b, egui::RichText::new(if *b {
+                "true"
+            } else {
+                "false"
+            }).monospace()));
+        }
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                let mut v = i;
+                if ui
+                    .add(egui::DragValue::new(&mut v).speed(1.0).max_decimals(0))
+                    .changed()
+                {
+                    *n = serde_json::Number::from(v);
+                }
+            } else {
+                let mut f = n.as_f64().unwrap_or(0.0);
+                if ui
+                    .add(egui::DragValue::new(&mut f).speed(0.1).max_decimals(6))
+                    .changed()
+                {
+                    *n = serde_json::Number::from_f64(f).unwrap_or_else(|| serde_json::Number::from(0));
+                }
+            }
+        }
+        serde_json::Value::String(s) => {
+            ui.add(
+                egui::TextEdit::singleline(s)
+                    .desired_width(420.0)
+                    .font(egui::TextStyle::Monospace)
+                    .margin(egui::Margin::symmetric(10.0, 8.0)),
+            );
+        }
+        serde_json::Value::Array(arr) => {
+            egui::Frame::none()
+                .fill(faint)
+                .rounding(8.0)
+                .inner_margin(egui::Margin::same(10.0))
+                .show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new(format!("Array ({} items)", arr.len())).strong().monospace());
+                        ui.add_space(6.0);
+                        let mut remove_idx: Option<usize> = None;
+                        for (i, item) in arr.iter_mut().enumerate() {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(format!("[{i}]")).monospace().weak());
+                                json_editor(ui, item, new_key_input);
+                                if ui.button("x").clicked() {
+                                    remove_idx = Some(i);
+                                }
+                            });
+                            ui.add_space(3.0);
+                        }
+                        if let Some(i) = remove_idx {
+                            arr.remove(i);
+                        }
+                        ui.add_space(6.0);
+                        if ui.button("+ Add item").clicked() {
+                            arr.push(serde_json::Value::String(String::new()));
+                        }
+                    });
+                });
+        }
+        serde_json::Value::Object(map) => {
+            egui::Frame::none()
+                .fill(faint)
+                .rounding(8.0)
+                .inner_margin(egui::Margin::same(10.0))
+                .show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new(format!("Object ({} keys)", map.len())).strong().monospace());
+                        ui.add_space(6.0);
+                        let keys: Vec<String> = map.keys().cloned().collect();
+                        let mut remove_key: Option<String> = None;
+                        for key in keys {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(&key).strong().monospace().color(key_color));
+                                if let Some(v) = map.get_mut(&key) {
+                                    json_editor(ui, v, new_key_input);
+                                }
+                                if ui.button("x").clicked() {
+                                    remove_key = Some(key);
+                                }
+                            });
+                            ui.add_space(3.0);
+                        }
+                        if let Some(k) = remove_key {
+                            map.remove(&k);
+                        }
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("New key:").monospace());
+                            ui.add(
+                                egui::TextEdit::singleline(new_key_input)
+                                    .hint_text("key name")
+                                    .desired_width(180.0)
+                                    .font(egui::TextStyle::Monospace)
+                                    .margin(egui::Margin::symmetric(8.0, 6.0)),
+                            );
+                            if ui.button("Add").clicked() && !new_key_input.trim().is_empty() {
+                                let k = new_key_input.trim().to_string();
+                                if !map.contains_key(&k) {
+                                    map.insert(k, serde_json::Value::String(String::new()));
+                                }
+                                new_key_input.clear();
+                            }
+                        });
+                    });
+                });
+        }
+    }
 }
 
 struct MyEguiApp {
@@ -102,6 +313,19 @@ struct MyEguiApp {
     selected_doc: Option<String>,
     log_results: bool,
     doc_filter: String,
+    doc_json: Option<serde_json::Value>,
+    doc_loading: bool,
+    new_key_input: String,
+    users: Vec<UserRow>,
+    users_view: bool,
+    users_loading: bool,
+    show_add_user: bool,
+    editing_user: Option<UserRow>,
+    user_name_input: String,
+    user_password_input: String,
+    user_roles_input: String,
+    confirm_delete: Option<String>,
+    read_only_public: bool,
 }
 
 impl Default for MyEguiApp {
@@ -132,6 +356,19 @@ impl Default for MyEguiApp {
             selected_doc: None,
             log_results: false,
             doc_filter: String::new(),
+            doc_json: None,
+            doc_loading: false,
+            new_key_input: String::new(),
+            users: Vec::new(),
+            users_view: false,
+            users_loading: false,
+            show_add_user: false,
+            editing_user: None,
+            user_name_input: String::new(),
+            user_password_input: String::new(),
+            user_roles_input: String::new(),
+            confirm_delete: None,
+            read_only_public: false,
         };
         if !app.servers.is_empty() {
             app.select_server(0);
@@ -342,6 +579,7 @@ impl MyEguiApp {
                 data_size,
                 disk_size,
                 compact_running,
+                public: None,
             });
         }
         rows
@@ -531,6 +769,512 @@ impl MyEguiApp {
         });
     }
 
+    fn load_doc(&mut self, ctx: &egui::Context, db: &str, doc_id: &str) {
+        let config = self.current_connection_config();
+        let pending = self.pending_log.clone();
+        let ctx2 = ctx.clone();
+        let db = db.to_string();
+        let doc_id = doc_id.to_string();
+        let path = format!("/{}/{}", db.replace('/', "%2F"), doc_id.replace('/', "%2F"));
+        let curl = Self::curl_command(&config.host, &config.user, &config.password, "GET", &path, None);
+        self.log_lines.push_str(&format!("\n{curl}"));
+        tokio::spawn(async move {
+            let base = config.host.trim_end_matches('/').to_string();
+            let url = format!("{base}{path}");
+            let http = reqwest::Client::new();
+            let req = http.get(&url);
+            let req = if !config.user.is_empty() || !config.password.is_empty() {
+                req.basic_auth(&config.user, Some(&config.password))
+            } else {
+                req
+            };
+            let msg = match req.send().await {
+                Ok(resp) => {
+                    let status = resp.status().as_u16();
+                    match resp.text().await {
+                        Ok(body) => {
+                            if serde_json::from_str::<serde_json::Value>(&body).is_ok() && (200..300).contains(&status) {
+                                format!("DOC|{body}")
+                            } else {
+                                format!("DOC_ERR|GET {path} [{status}]: {body}")
+                            }
+                        }
+                        Err(e) => format!("DOC_ERR|GET {path} failed: {e}"),
+                    }
+                }
+                Err(e) => format!("DOC_ERR|GET {path} failed: {e}"),
+            };
+            println!("{msg}");
+            if let Ok(mut p) = pending.lock() {
+                p.push(msg);
+            }
+            ctx2.request_repaint();
+        });
+    }
+
+    fn save_doc(&mut self, ctx: &egui::Context, db: &str, doc_id: &str) {
+        let config = self.current_connection_config();
+        let pending = self.pending_log.clone();
+        let ctx2 = ctx.clone();
+        let db = db.to_string();
+        let doc_id = doc_id.to_string();
+        let doc = match &self.doc_json {
+            Some(d) => d.clone(),
+            None => return,
+        };
+        let body = serde_json::to_string_pretty(&doc).unwrap_or_else(|_| doc.to_string());
+        let log_results = self.log_results;
+        let path = format!("/{}/{}", db.replace('/', "%2F"), doc_id.replace('/', "%2F"));
+        let curl = Self::curl_command(&config.host, &config.user, &config.password, "PUT", &path, Some(&body));
+        if log_results {
+            self.log_lines.push_str(&format!("\n{curl}"));
+        } else {
+            self.log_lines.push_str(&format!("\n{}", Self::curl_command(&config.host, &config.user, &config.password, "PUT", &path, None)));
+        }
+        tokio::spawn(async move {
+            let base = config.host.trim_end_matches('/').to_string();
+            let url = format!("{base}{path}");
+            let http = reqwest::Client::new();
+            let req = http.put(&url).header("Content-Type", "application/json").body(body);
+            let req = if !config.user.is_empty() || !config.password.is_empty() {
+                req.basic_auth(&config.user, Some(&config.password))
+            } else {
+                req
+            };
+            let msg = match req.send().await {
+                Ok(resp) => {
+                    let status = resp.status().as_u16();
+                    match resp.text().await {
+                        Ok(body) => {
+                            if (200..300).contains(&status) {
+                                if log_results {
+                                    format!("DOC_SAVED|{body}|PUT {path} [{status}]")
+                                } else {
+                                    format!("DOC_SAVED|{body}|PUT {path} [{status}]: OK")
+                                }
+                            } else {
+                                format!("DOC_SAVE_ERR|PUT {path} [{status}]: {body}")
+                            }
+                        }
+                        Err(e) => format!("DOC_SAVE_ERR|PUT {path} failed: {e}"),
+                    }
+                }
+                Err(e) => format!("DOC_SAVE_ERR|PUT {path} failed: {e}"),
+            };
+            println!("{msg}");
+            if let Ok(mut p) = pending.lock() {
+                p.push(msg);
+            }
+            ctx2.request_repaint();
+        });
+    }
+
+    fn load_users(&mut self, ctx: &egui::Context) {
+        let config = self.current_connection_config();
+        let pending = self.pending_log.clone();
+        let ctx2 = ctx.clone();
+        let path = "/_users/_all_docs?include_docs=true";
+        let curl = Self::curl_command(&config.host, &config.user, &config.password, "GET", path, None);
+        self.users_loading = true;
+        self.log_lines.push_str(&format!("\n{curl}"));
+        tokio::spawn(async move {
+            let base = config.host.trim_end_matches('/').to_string();
+            let url = format!("{base}{path}");
+            let http = reqwest::Client::new();
+            let req = http.get(&url);
+            let req = if !config.user.is_empty() || !config.password.is_empty() {
+                req.basic_auth(&config.user, Some(&config.password))
+            } else {
+                req
+            };
+            let msg = match req.send().await {
+                Ok(resp) => {
+                    let status = resp.status().as_u16();
+                    match resp.text().await {
+                        Ok(body) => {
+                            if (200..300).contains(&status) {
+                                match serde_json::from_str::<serde_json::Value>(&body) {
+                                    Ok(v) => {
+                                        let mut users = Vec::new();
+                                        if let Some(rows) = v.get("rows").and_then(|r| r.as_array()) {
+                                            for row in rows {
+                                                let doc = row.get("doc").cloned().unwrap_or(serde_json::Value::Null);
+                                                if doc.get("type").and_then(|t| t.as_str()) != Some("user") {
+                                                    continue;
+                                                }
+                                                let id = row.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
+                                                let name = doc.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
+                                                let rev = doc.get("_rev").and_then(|r| r.as_str()).unwrap_or("").to_string();
+                                                let roles = doc.get("roles").and_then(|r| r.as_array()).map(|a| {
+                                                    a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")
+                                                }).unwrap_or_default();
+                                                users.push(serde_json::json!({
+                                                    "id": id,
+                                                    "name": name,
+                                                    "rev": rev,
+                                                    "roles": roles,
+                                                    "doc": doc,
+                                                    "peruser_db_exists": false,
+                                                    "public_readonly": false,
+                                                }));
+                                            }
+                                        }
+                                        let envelope = serde_json::json!({
+                                            "users": users,
+                                            "log": format!("Loaded {} users [{status}]", users.len()),
+                                        });
+                                        format!("USERS|{}", serde_json::to_string(&envelope).unwrap_or_default())
+                                    }
+                                    Err(e) => format!("USERS_ERR|Failed to parse users: {e}"),
+                                }
+                            } else {
+                                format!("USERS_ERR|GET {path} [{status}]: {body}")
+                            }
+                        }
+                        Err(e) => format!("USERS_ERR|GET {path} failed: {e}"),
+                    }
+                }
+                Err(e) => format!("USERS_ERR|GET {path} failed: {e}"),
+            };
+            println!("{msg}");
+            if let Ok(mut p) = pending.lock() {
+                p.push(msg);
+            }
+            ctx2.request_repaint();
+        });
+    }
+
+    fn check_public_dbs(&mut self, ctx: &egui::Context) {
+        let config = self.current_connection_config();
+        let pending = self.pending_log.clone();
+        let ctx2 = ctx.clone();
+        let names: Vec<String> = self.db_infos.iter().map(|r| r.name.clone()).collect();
+        self.log_lines.push_str(&format!(
+            "\nChecking public access for {} database(s)...",
+            names.len()
+        ));
+        tokio::spawn(async move {
+            let base = config.host.trim_end_matches('/').to_string();
+            let http = reqwest::Client::new();
+            let mut statuses = Vec::new();
+            for name in &names {
+                let db_enc = name.replace('/', "%2F");
+                let path = format!("/{db_enc}");
+                let (status, _) = get_json(&http, &base, "", "", &path).await;
+                statuses.push(serde_json::json!({
+                    "name": name,
+                    "public": status == 200,
+                }));
+            }
+            let envelope = serde_json::json!({
+                "statuses": statuses,
+                "log": format!("Checked public access for {} database(s).", names.len()),
+            });
+            let msg = format!(
+                "DB_PUBLIC|{}",
+                serde_json::to_string(&envelope).unwrap_or_default()
+            );
+            println!("{msg}");
+            if let Ok(mut p) = pending.lock() {
+                p.push(msg);
+            }
+            ctx2.request_repaint();
+        });
+    }
+
+    fn check_readonly_users(&mut self, ctx: &egui::Context) {
+        let config = self.current_connection_config();
+        let pending = self.pending_log.clone();
+        let ctx2 = ctx.clone();
+        let users = self.users.clone();
+        self.log_lines
+            .push_str(&format!("\nChecking {} per-user database(s)...", users.len()));
+        tokio::spawn(async move {
+            let base = config.host.trim_end_matches('/').to_string();
+            let http = reqwest::Client::new();
+            let mut statuses = Vec::new();
+            for u in &users {
+                let hex: String = u.name.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+                let db = format!("userdb-{hex}");
+                let (status, _) = get_json(&http, &base, &config.user, &config.password, &format!("/{db}")).await;
+                let peruser = status == 200;
+                let mut public_ro = false;
+                if peruser {
+                    let (dstatus, ddoc) = get_json(
+                        &http,
+                        &base,
+                        &config.user,
+                        &config.password,
+                        &format!("/{db}/_design/auth"),
+                    )
+                    .await;
+                    public_ro = dstatus == 200
+                        && ddoc
+                            .as_ref()
+                            .map(|v| v.get("validate_doc_update").is_some())
+                            .unwrap_or(false);
+                }
+                statuses.push(serde_json::json!({
+                    "name": u.name,
+                    "peruser": peruser,
+                    "public_ro": public_ro,
+                }));
+            }
+            let envelope = serde_json::json!({
+                "statuses": statuses,
+                "log": format!("Checked {} per-user database(s).", users.len()),
+            });
+            let msg = format!(
+                "USERS_STATUS|{}",
+                serde_json::to_string(&envelope).unwrap_or_default()
+            );
+            println!("{msg}");
+            if let Ok(mut p) = pending.lock() {
+                p.push(msg);
+            }
+            ctx2.request_repaint();
+        });
+    }
+
+    async fn setup_readonly_db(
+        host: String,
+        user: String,
+        password: String,
+        name: String,
+    ) -> Vec<String> {
+        let mut logs = Vec::new();
+        let base = host.trim_end_matches('/').to_string();
+        let hex: String = name.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+        let db = format!("userdb-{hex}");
+        let http = reqwest::Client::new();
+
+        let js_name = name.replace('\\', "\\\\").replace('\'', "\\'");
+        let validate = format!(
+            "function(newDoc, oldDoc, userCtx) {{ if (userCtx.roles.indexOf('admin') !== -1) {{ return; }} if (userCtx.name === '{js_name}') {{ return; }} throw ({{ forbidden: 'Only the user or admins may edit the database' }}); }}"
+        );
+
+        let dpath = format!("/{db}/_design/auth");
+        let mut ddoc = serde_json::json!({
+            "_id": "_design/auth",
+            "language": "javascript",
+            "validate_doc_update": validate,
+        });
+        if let Some(rev) = fetch_rev(&http, &base, &user, &password, &dpath).await {
+            ddoc["_rev"] = serde_json::Value::String(rev);
+        }
+        let dbody = serde_json::to_string_pretty(&ddoc).unwrap_or_else(|_| ddoc.to_string());
+        logs.push(Self::curl_command(&host, &user, &password, "PUT", &dpath, Some(&dbody)));
+        let (status, body) = put_json(&http, &base, &user, &password, &dpath, &dbody).await;
+        let snippet: String = body.chars().take(200).collect();
+        logs.push(format!("  {db}/_design/auth [{status}] {snippet}"));
+
+        let spath = format!("/{db}/_security");
+        let mut sec = serde_json::json!({
+            "admins": { "names": [], "roles": [] },
+            "members": { "names": [], "roles": [] },
+        });
+        if let Some(rev) = fetch_rev(&http, &base, &user, &password, &spath).await {
+            sec["_rev"] = serde_json::Value::String(rev);
+        }
+        let sbody = serde_json::to_string(&sec).unwrap_or_else(|_| sec.to_string());
+        logs.push(Self::curl_command(&host, &user, &password, "PUT", &spath, Some(&sbody)));
+        let (status, body) = put_json(&http, &base, &user, &password, &spath, &sbody).await;
+        let snippet: String = body.chars().take(200).collect();
+        logs.push(format!("  {db}/_security [{status}] {snippet}"));
+
+        logs
+    }
+
+    fn save_user(&mut self, ctx: &egui::Context) {
+        let config = self.current_connection_config();
+        let pending = self.pending_log.clone();
+        let ctx2 = ctx.clone();
+        let name = self.user_name_input.trim().to_string();
+        if name.is_empty() {
+            self.log_lines.push_str("\nUsername is empty.");
+            return;
+        }
+        let password = self.user_password_input.clone();
+        let roles: Vec<String> = self
+            .user_roles_input
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect();
+        let editing = self.editing_user.clone();
+        let is_edit = editing.is_some();
+        let make_readonly = self.read_only_public;
+        let readonly_host = config.host.clone();
+        let readonly_user = config.user.clone();
+        let readonly_password = config.password.clone();
+        let doc = if let Some(e) = editing.as_ref() {
+            let mut d = e.doc.clone();
+            d["name"] = serde_json::Value::String(name.clone());
+            d["type"] = serde_json::Value::String("user".to_string());
+            d["roles"] = serde_json::Value::Array(
+                roles.iter().map(|r| serde_json::Value::String(r.clone())).collect(),
+            );
+            if !password.is_empty() {
+                d["password"] = serde_json::Value::String(password.clone());
+            }
+            d
+        } else {
+            serde_json::json!({
+                "name": name,
+                "password": password,
+                "roles": roles,
+                "type": "user",
+            })
+        };
+        let path = format!("/_users/org.couchdb.user:{name}");
+        let body = serde_json::to_string(&doc).unwrap_or_else(|_| doc.to_string());
+        let curl = Self::curl_command(&config.host, &config.user, &config.password, "PUT", &path, Some(&body));
+        self.log_lines.push_str(&format!("\n{curl}"));
+        tokio::spawn(async move {
+            let base = config.host.trim_end_matches('/').to_string();
+            let url = format!("{base}{path}");
+            let http = reqwest::Client::new();
+            let req = http
+                .put(&url)
+                .header("Accept", "application/json")
+                .header("Content-Type", "application/json")
+                .body(body);
+            let req = if !config.user.is_empty() || !config.password.is_empty() {
+                req.basic_auth(&config.user, Some(&config.password))
+            } else {
+                req
+            };
+            let msg = match req.send().await {
+                Ok(resp) => {
+                    let status = resp.status().as_u16();
+                    match resp.text().await {
+                        Ok(body) => {
+                            if (200..300).contains(&status) {
+                                let action = if is_edit { "Updated" } else { "Created" };
+                                let mut log = format!("{action} {name} [{status}]");
+                                if make_readonly {
+                                    let extra = Self::setup_readonly_db(
+                                        readonly_host.clone(),
+                                        readonly_user.clone(),
+                                        readonly_password.clone(),
+                                        name.clone(),
+                                    )
+                                    .await;
+                                    if !extra.is_empty() {
+                                        log.push('\n');
+                                        log.push_str(&extra.join("\n"));
+                                    }
+                                }
+                                format!("USER_SAVED|{body}|{log}")
+                            } else {
+                                format!("USER_SAVE_ERR|PUT {path} [{status}]: {body}")
+                            }
+                        }
+                        Err(e) => format!("USER_SAVE_ERR|PUT {path} failed: {e}"),
+                    }
+                }
+                Err(e) => format!("USER_SAVE_ERR|PUT {path} failed: {e}"),
+            };
+            println!("{msg}");
+            if let Ok(mut p) = pending.lock() {
+                p.push(msg);
+            }
+            ctx2.request_repaint();
+        });
+    }
+
+    fn delete_user(&mut self, ctx: &egui::Context, id: &str, rev: &str) {
+        let config = self.current_connection_config();
+        let pending = self.pending_log.clone();
+        let ctx2 = ctx.clone();
+        let id = id.to_string();
+        let rev = rev.to_string();
+        let path = format!("/_users/{id}?rev={rev}");
+        let curl = Self::curl_command(&config.host, &config.user, &config.password, "DELETE", &path, None);
+        self.log_lines.push_str(&format!("\n{curl}"));
+        tokio::spawn(async move {
+            let base = config.host.trim_end_matches('/').to_string();
+            let url = format!("{base}{path}");
+            let http = reqwest::Client::new();
+            let req = http.delete(&url);
+            let req = if !config.user.is_empty() || !config.password.is_empty() {
+                req.basic_auth(&config.user, Some(&config.password))
+            } else {
+                req
+            };
+            let msg = match req.send().await {
+                Ok(resp) => {
+                    let status = resp.status().as_u16();
+                    match resp.text().await {
+                        Ok(body) => {
+                            if (200..300).contains(&status) {
+                                format!("USER_DELETED|{body}|Deleted {id} [{status}]")
+                            } else {
+                                format!("USER_DELETE_ERR|DELETE {path} [{status}]: {body}")
+                            }
+                        }
+                        Err(e) => format!("USER_DELETE_ERR|DELETE {path} failed: {e}"),
+                    }
+                }
+                Err(e) => format!("USER_DELETE_ERR|DELETE {path} failed: {e}"),
+            };
+            println!("{msg}");
+            if let Ok(mut p) = pending.lock() {
+                p.push(msg);
+            }
+            ctx2.request_repaint();
+        });
+    }
+
+    fn check_public_access(&mut self, ctx: &egui::Context, db: &str) {
+        let config = self.current_connection_config();
+        let pending = self.pending_log.clone();
+        let ctx2 = ctx.clone();
+        let db = db.to_string();
+        let db_enc = db.replace('/', "%2F");
+        let path = format!("/{db_enc}/_all_docs?limit=1");
+        let curl = Self::curl_command(&config.host, "", "", "GET", &path, None);
+        self.log_lines.push_str(&format!("\n{curl}"));
+        tokio::spawn(async move {
+            let base = config.host.trim_end_matches('/').to_string();
+            let url = format!("{base}{path}");
+            let http = reqwest::Client::new();
+            let req = http.get(&url);
+            let msg = match req.send().await {
+                Ok(resp) => {
+                    let status = resp.status().as_u16();
+                    match resp.text().await {
+                        Ok(body) => {
+                            let snippet: String = body.chars().take(200).collect();
+                            match status {
+                                200 => format!(
+                                    "PUBLIC_ACCESS|{db}: public read access: YES - readable without credentials [200] {snippet}"
+                                ),
+                                401 | 403 => format!(
+                                    "PUBLIC_ACCESS|{db}: public read access: NO - server answered [{status}] (authentication required)"
+                                ),
+                                404 => format!(
+                                    "PUBLIC_ACCESS|{db}: public read access: NO - database not found (or not visible) [404]"
+                                ),
+                                _ => format!(
+                                    "PUBLIC_ACCESS|{db}: public read access: unknown [{status}] {snippet}"
+                                ),
+                            }
+                        }
+                        Err(e) => format!("PUBLIC_ACCESS|{db}: check failed: {e}"),
+                    }
+                }
+                Err(e) => format!("PUBLIC_ACCESS|{db}: check failed: {e}"),
+            };
+            println!("{msg}");
+            if let Ok(mut p) = pending.lock() {
+                p.push(msg);
+            }
+            ctx2.request_repaint();
+        });
+    }
+
     fn run_db_command(&mut self, ctx: &egui::Context, db: &str, endpoint: &str) {
         let config = self.current_connection_config();
         let pending = self.pending_log.clone();
@@ -599,6 +1343,13 @@ impl MyEguiApp {
         self.connected_host.clear();
         self.selected_db = None;
         self.doc_filter.clear();
+        self.users_view = false;
+        self.users.clear();
+        self.users_loading = false;
+        self.show_add_user = false;
+        self.editing_user = None;
+        self.confirm_delete = None;
+        self.read_only_public = false;
         self.log_lines.push_str(&format!(
             "\n{}",
             Self::curl_command(&host, &user, &password, "GET", "/_all_dbs", None)
@@ -626,6 +1377,10 @@ impl MyEguiApp {
 impl eframe::App for MyEguiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let mut fetch_db_info = false;
+        let mut refresh_doc = false;
+        let mut refresh_users = false;
+        let mut refresh_readonly = false;
+        let mut check_public = false;
         if let Ok(mut pending) = self.pending_log.lock() {
             if !pending.is_empty() {
                 for msg in pending.drain(..) {
@@ -643,6 +1398,10 @@ impl eframe::App for MyEguiApp {
                     } else if let Some(m) = msg.strip_prefix("CONNECTED_ERR|") {
                         self.connected = false;
                         self.connected_host.clear();
+                        self.users_view = false;
+                        self.users.clear();
+                        self.users_loading = false;
+                        self.show_add_user = false;
                         self.log_lines.push('\n');
                         self.log_lines.push_str(m);
                     } else if let Some(rest) = msg.strip_prefix("DB_LIST|") {
@@ -654,6 +1413,8 @@ impl eframe::App for MyEguiApp {
                                 self.doc_filter.clear();
                                 self.doc_list.clear();
                                 self.selected_doc = None;
+                                self.doc_json = None;
+                                self.doc_loading = false;
                             }
                             self.log_lines.push('\n');
                             self.log_lines.push_str(m);
@@ -665,6 +1426,7 @@ impl eframe::App for MyEguiApp {
                         if let Ok(env) = serde_json::from_str::<serde_json::Value>(rest) {
                             if let Some(data) = env.get("data") {
                                 self.db_infos = Self::parse_db_infos(data);
+                                check_public = !self.db_infos.is_empty();
                             }
                             if let Some(log) = env.get("log").and_then(|v| v.as_str()) {
                                 self.log_lines.push('\n');
@@ -691,6 +1453,8 @@ impl eframe::App for MyEguiApp {
                                     })
                                     .collect();
                                 self.selected_doc = None;
+                                self.doc_json = None;
+                                self.doc_loading = false;
                             }
                             if let Some(log) = env.get("log").and_then(|v| v.as_str()) {
                                 self.log_lines.push('\n');
@@ -700,6 +1464,138 @@ impl eframe::App for MyEguiApp {
                             self.log_lines.push('\n');
                             self.log_lines.push_str(rest);
                         }
+                    } else if let Some(rest) = msg.strip_prefix("DOC|") {
+                        self.doc_loading = false;
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(rest) {
+                            self.doc_json = Some(v);
+                            if let Some(id) = &self.selected_doc {
+                                self.log_lines.push_str(&format!("\nLoaded document {id}"));
+                            }
+                        } else {
+                            self.log_lines.push('\n');
+                            self.log_lines.push_str(rest);
+                        }
+                    } else if let Some(m) = msg.strip_prefix("DOC_ERR|") {
+                        self.doc_loading = false;
+                        self.log_lines.push('\n');
+                        self.log_lines.push_str(m);
+                    } else if let Some(rest) = msg.strip_prefix("DOC_SAVED|") {
+                        if let Some((body, log)) = rest.split_once('|') {
+                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
+                                if let Some(rev) = v.get("rev").and_then(|r| r.as_str()) {
+                                    if let Some(doc) = self.doc_json.as_mut() {
+                                        doc["_rev"] = serde_json::Value::String(rev.to_string());
+                                    }
+                                }
+                            }
+                            self.log_lines.push('\n');
+                            self.log_lines.push_str(log);
+                            refresh_doc = true;
+                        } else {
+                            self.log_lines.push('\n');
+                            self.log_lines.push_str(rest);
+                        }
+                    } else if let Some(m) = msg.strip_prefix("DOC_SAVE_ERR|") {
+                        self.log_lines.push('\n');
+                        self.log_lines.push_str(m);
+                    } else if let Some(rest) = msg.strip_prefix("USERS|") {
+                        self.users_loading = false;
+                        if let Ok(env) = serde_json::from_str::<serde_json::Value>(rest) {
+                            if let Some(users) = env.get("users").and_then(|v| v.as_array()) {
+                                self.users = users
+                                    .iter()
+                                    .filter_map(|d| serde_json::from_value(d.clone()).ok())
+                                    .collect();
+                            }
+                            if let Some(log) = env.get("log").and_then(|v| v.as_str()) {
+                                self.log_lines.push('\n');
+                                self.log_lines.push_str(log);
+                            }
+                            if !self.users.is_empty() {
+                                refresh_readonly = true;
+                            }
+                        } else {
+                            self.log_lines.push('\n');
+                            self.log_lines.push_str(rest);
+                        }
+                    } else if let Some(rest) = msg.strip_prefix("USERS_STATUS|") {
+                        if let Ok(env) = serde_json::from_str::<serde_json::Value>(rest) {
+                            if let Some(statuses) = env.get("statuses").and_then(|v| v.as_array()) {
+                                for s in statuses {
+                                    let name = s.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                                    let peruser = s.get("peruser").and_then(|v| v.as_bool()).unwrap_or(false);
+                                    let public_ro = s.get("public_ro").and_then(|v| v.as_bool()).unwrap_or(false);
+                                    if let Some(u) = self.users.iter_mut().find(|u| u.name == name) {
+                                        u.peruser_db_exists = peruser;
+                                        u.public_readonly = public_ro;
+                                    }
+                                }
+                            }
+                            if let Some(log) = env.get("log").and_then(|v| v.as_str()) {
+                                self.log_lines.push('\n');
+                                self.log_lines.push_str(log);
+                            }
+                        } else {
+                            self.log_lines.push('\n');
+                            self.log_lines.push_str(rest);
+                        }
+                    } else if let Some(m) = msg.strip_prefix("PUBLIC_ACCESS|") {
+                        self.log_lines.push('\n');
+                        self.log_lines.push_str(m);
+                    } else if let Some(rest) = msg.strip_prefix("DB_PUBLIC|") {
+                        if let Ok(env) = serde_json::from_str::<serde_json::Value>(rest) {
+                            if let Some(statuses) = env.get("statuses").and_then(|v| v.as_array()) {
+                                for s in statuses {
+                                    let name = s.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                                    let public = s.get("public").and_then(|v| v.as_bool()).unwrap_or(false);
+                                    if let Some(r) = self.db_infos.iter_mut().find(|r| r.name == name) {
+                                        r.public = Some(public);
+                                    }
+                                }
+                            }
+                            if let Some(log) = env.get("log").and_then(|v| v.as_str()) {
+                                self.log_lines.push('\n');
+                                self.log_lines.push_str(log);
+                            }
+                        } else {
+                            self.log_lines.push('\n');
+                            self.log_lines.push_str(rest);
+                        }
+                    } else if let Some(m) = msg.strip_prefix("USERS_ERR|") {
+                        self.users_loading = false;
+                        self.log_lines.push('\n');
+                        self.log_lines.push_str(m);
+                    } else if let Some(rest) = msg.strip_prefix("USER_SAVED|") {
+                        if let Some((_body, log)) = rest.split_once('|') {
+                            self.log_lines.push('\n');
+                            self.log_lines.push_str(log);
+                            self.show_add_user = false;
+                            self.editing_user = None;
+                            self.user_name_input.clear();
+                            self.user_password_input.clear();
+                            self.user_roles_input.clear();
+                            self.read_only_public = false;
+                            refresh_users = true;
+                        } else {
+                            self.log_lines.push('\n');
+                            self.log_lines.push_str(rest);
+                        }
+                    } else if let Some(m) = msg.strip_prefix("USER_SAVE_ERR|") {
+                        self.log_lines.push('\n');
+                        self.log_lines.push_str(m);
+                    } else if let Some(rest) = msg.strip_prefix("USER_DELETED|") {
+                        if let Some((_body, log)) = rest.split_once('|') {
+                            self.log_lines.push('\n');
+                            self.log_lines.push_str(log);
+                            self.confirm_delete = None;
+                            refresh_users = true;
+                        } else {
+                            self.log_lines.push('\n');
+                            self.log_lines.push_str(rest);
+                        }
+                    } else if let Some(m) = msg.strip_prefix("USER_DELETE_ERR|") {
+                        self.log_lines.push('\n');
+                        self.log_lines.push_str(m);
                     } else {
                         self.log_lines.push('\n');
                         self.log_lines.push_str(&msg);
@@ -710,6 +1606,21 @@ impl eframe::App for MyEguiApp {
         if fetch_db_info {
             self.action = "get_dbs_info".to_string();
             self.run_action(ctx);
+        }
+        if refresh_doc {
+            if let (Some(db), Some(id)) = (self.selected_db.clone(), self.selected_doc.clone()) {
+                self.doc_loading = true;
+                self.load_doc(ctx, &db, &id);
+            }
+        }
+        if refresh_users {
+            self.load_users(ctx);
+        }
+        if refresh_readonly {
+            self.check_readonly_users(ctx);
+        }
+        if check_public {
+            self.check_public_dbs(ctx);
         }
         if self.window_help_open {
             egui::Window::new("Help")
@@ -805,7 +1716,9 @@ impl eframe::App for MyEguiApp {
 
         egui::SidePanel::left("servers_panel")
             .resizable(true)
-            .default_width(220.0)
+            .default_width(170.0)
+            .min_width(140.0)
+            .max_width(220.0)
             .show(ctx, |ui| {
                 ui.heading("Servers");
                 ui.separator();
@@ -843,10 +1756,14 @@ impl eframe::App for MyEguiApp {
 
         egui::SidePanel::right("commands_panel")
             .resizable(true)
-            .default_width(320.0)
+            .default_width(220.0)
+            .min_width(190.0)
+            .max_width(260.0)
             .show(ctx, |ui| {
                 if self.connected {
-                    if self.selected_db.is_some() {
+                    if self.doc_json.is_some() || self.doc_loading || self.selected_doc.is_some() {
+                        ui.heading("Document Commands");
+                    } else if self.selected_db.is_some() {
                         ui.heading("Database Commands");
                     } else {
                         ui.heading("Server Commands");
@@ -857,20 +1774,40 @@ impl eframe::App for MyEguiApp {
                 ui.separator();
                 if self.connected {
                     if let Some(db) = self.selected_db.clone() {
-                        if ui.button("Get_all_docs").clicked() {
+                        if ui.button("List all Docs").clicked() {
                             self.run_db_command(ctx, &db, "_all_docs");
                         }
-                        if ui.button("Get_all_design_docs").clicked() {
-                            self.run_db_command(ctx, &db, "_design_docs");
-                        }
-                        ui.separator();
-                        if ui.button("Back to Server Commands").clicked() {
-                            self.selected_db = None;
-                            self.doc_filter.clear();
-                            self.doc_list.clear();
-                            self.selected_doc = None;
+                        if ui.button("Access database from public").clicked() {
+                            self.check_public_access(ctx, &db);
                         }
                     } else {
+                    if ui.button("List DBs").clicked() {
+                        self.users_view = false;
+                        self.selected_db = None;
+                        self.doc_filter.clear();
+                        self.doc_list.clear();
+                        self.selected_doc = None;
+                        self.doc_json = None;
+                        self.doc_loading = false;
+                        self.action = "get_dbs_info".to_string();
+                        self.run_action(ctx);
+                    }
+                    if ui.button("List users").clicked() {
+                        self.users_view = true;
+                        self.show_add_user = false;
+                        self.confirm_delete = None;
+                        self.load_users(ctx);
+                    }
+                    if ui.button("Add new User").clicked() {
+                        self.users_view = true;
+                        self.show_add_user = true;
+                        self.editing_user = None;
+                        self.user_name_input.clear();
+                        self.user_password_input.clear();
+                        self.user_roles_input.clear();
+                        self.confirm_delete = None;
+                        self.read_only_public = false;
+                    }
                     if ui.button("Save all Designs").clicked() {
                         if let Some(path) = rfd::FileDialog::new().pick_folder() {
                             let config = self.current_connection_config();
@@ -924,10 +1861,6 @@ impl eframe::App for MyEguiApp {
                             });
                         }
                     }
-                    if ui.button("Get_dbs").clicked() {
-                        self.action = "get_dbs_info".to_string();
-                        self.run_action(ctx);
-                    }
                     }
                 }
 
@@ -941,21 +1874,264 @@ impl eframe::App for MyEguiApp {
             ui.group(|ui| {
                 ui.set_min_height(content_h);
                 ui.set_max_height(content_h);
-                ui.label("Content");
-                ui.separator();
-                if let Some(db) = self.selected_db.clone() {
-                    ui.horizontal(|ui| {
-                        if ui.button("Back").clicked() {
+                ui.horizontal(|ui| {
+                    let server_label = if !self.server_name.trim().is_empty() {
+                        self.server_name.trim().to_string()
+                    } else if !self.connected_host.trim().is_empty() {
+                        self.connected_host.trim().to_string()
+                    } else if !self.host.trim().is_empty() {
+                        self.host.trim().to_string()
+                    } else {
+                        "Couchy".to_string()
+                    };
+                    if self.connected {
+                        if ui.link(&server_label).clicked() {
+                            self.users_view = false;
+                            self.show_add_user = false;
                             self.selected_db = None;
                             self.doc_filter.clear();
                             self.doc_list.clear();
                             self.selected_doc = None;
-                            self.doc_filter.clear();
+                            self.doc_json = None;
+                            self.doc_loading = false;
                         }
-                        ui.label(format!("Documents in {db}"));
+                    } else {
+                        ui.label(egui::RichText::new(&server_label).strong());
+                    }
+                    if self.users_view {
+                        ui.label(egui::RichText::new("›").weak());
+                        ui.label(egui::RichText::new("Users").strong());
+                    } else if let Some(db) = self.selected_db.clone() {
+                        let db_label = Self::db_display_label(&db);
+                        let doc_mode = self.selected_doc.is_some() || self.doc_json.is_some() || self.doc_loading;
+                        ui.label(egui::RichText::new("›").weak());
+                        if doc_mode {
+                            if ui.link(&db_label).clicked() {
+                                self.selected_doc = None;
+                                self.doc_json = None;
+                                self.doc_loading = false;
+                            }
+                        } else {
+                            ui.label(egui::RichText::new(&db_label).strong());
+                        }
+                        if let Some(id) = &self.selected_doc {
+                            ui.label(egui::RichText::new("›").weak());
+                            ui.label(egui::RichText::new(id).strong().monospace());
+                        }
+                    }
+                });
+                ui.separator();
+                if self.users_view {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Users").strong().heading());
+                        if ui.button("Reload").clicked() {
+                            self.load_users(ctx);
+                        }
+                        if ui.button("Add new User").clicked() {
+                            self.show_add_user = true;
+                            self.editing_user = None;
+                            self.user_name_input.clear();
+                            self.user_password_input.clear();
+                            self.user_roles_input.clear();
+                            self.read_only_public = false;
+                        }
+                    });
+                    if self.show_add_user {
+                        let is_edit = self.editing_user.is_some();
+                        let key_color = ui.visuals().hyperlink_color;
+                        let faint = ui.visuals().faint_bg_color;
+                        let title = if is_edit { "Edit user" } else { "New user" };
+                        egui::Frame::none()
+                            .fill(faint)
+                            .rounding(8.0)
+                            .inner_margin(egui::Margin::symmetric(14.0, 12.0))
+                            .show(ui, |ui| {
+                                ui.vertical(|ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(egui::RichText::new(title).heading().strong());
+                                        ui.label(egui::RichText::new(if is_edit {
+                                            format!("org.couchdb.user:{}", self.user_name_input)
+                                        } else {
+                                            "org.couchdb.user:<name>".to_string()
+                                        }).monospace().weak());
+                                    });
+                                    ui.add_space(8.0);
+                                    ui.separator();
+                                    ui.add_space(8.0);
+                                    egui::Grid::new("user_form_grid")
+                                        .num_columns(2)
+                                        .spacing([12.0, 10.0])
+                                        .show(ui, |ui| {
+                                            ui.label(egui::RichText::new("Username").monospace().strong().color(key_color));
+                                            ui.add(
+                                                egui::TextEdit::singleline(&mut self.user_name_input)
+                                                    .interactive(!is_edit)
+                                                    .desired_width(280.0)
+                                                    .margin(egui::Margin::symmetric(10.0, 8.0))
+                                                    .font(egui::TextStyle::Monospace),
+                                            );
+                                            ui.end_row();
+                                            ui.label(egui::RichText::new("Password").monospace().strong().color(key_color));
+                                            ui.add(
+                                                egui::TextEdit::singleline(&mut self.user_password_input)
+                                                    .password(true)
+                                                    .hint_text(if is_edit { "leave empty to keep current" } else { "password" })
+                                                    .desired_width(280.0)
+                                                    .margin(egui::Margin::symmetric(10.0, 8.0))
+                                                    .font(egui::TextStyle::Monospace),
+                                            );
+                                            ui.end_row();
+                                            ui.label(egui::RichText::new("Roles").monospace().strong().color(key_color));
+                                            ui.add(
+                                                egui::TextEdit::singleline(&mut self.user_roles_input)
+                                                    .hint_text("comma separated, e.g. admins, qa")
+                                                    .desired_width(360.0)
+                                                    .margin(egui::Margin::symmetric(10.0, 8.0))
+                                                    .font(egui::TextStyle::Monospace),
+                                            );
+                                            ui.end_row();
+                                            ui.label("");
+                                            ui.horizontal(|ui| {
+                                                ui.checkbox(&mut self.read_only_public, egui::RichText::new("Read Only Public").monospace().strong());
+                                            });
+                                            ui.end_row();
+                                        });
+                                    ui.horizontal(|ui| {
+                                        ui.add_space(140.0);
+                                        ui.label(egui::RichText::new("opens the user's own database for public read; only this user or admins can edit").weak().small());
+                                    });
+                                    ui.add_space(8.0);
+                                    ui.separator();
+                                    ui.add_space(8.0);
+                                    ui.horizontal(|ui| {
+                                        if ui.button(if is_edit { "Save changes" } else { "Create user" }).clicked() {
+                                            self.save_user(ctx);
+                                        }
+                                        if ui.button("Cancel").clicked() {
+                                            self.show_add_user = false;
+                                            self.read_only_public = false;
+                                        }
+                                    });
+                                });
+                            });
+                    }
+                    ui.separator();
+                    if self.users_loading {
+                        ui.label("Loading users...");
+                    } else if self.users.is_empty() {
+                        ui.label("No users found.");
+                    } else {
+                        let mut edit_user: Option<UserRow> = None;
+                        let mut request_delete: Option<String> = None;
+                        let mut cancel_delete = false;
+                        let mut do_delete: Option<(String, String)> = None;
+                        let confirm_delete = self.confirm_delete.clone();
+                        egui::ScrollArea::both()
+                            .id_source("users_scroll")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                egui::Grid::new("users_grid")
+                                    .striped(true)
+                                    .num_columns(5)
+                                    .spacing([16.0, 6.0])
+                                    .show(ui, |ui| {
+                                        ui.strong("User");
+                                        ui.strong("Roles");
+                                        ui.strong("Per-user DB");
+                                        ui.strong("Public R/O");
+                                        ui.strong("Actions");
+                                        ui.end_row();
+                                        let yes = egui::RichText::new("yes").color(egui::Color32::from_rgb(110, 210, 110)).strong();
+                                        let no = egui::RichText::new("no").color(egui::Color32::from_gray(150));
+                                        for row in &self.users {
+                                            ui.label(egui::RichText::new(&row.name).monospace().strong());
+                                            ui.label(if row.roles.is_empty() {
+                                                "-".to_string()
+                                            } else {
+                                                row.roles.clone()
+                                            });
+                                            ui.label(if row.peruser_db_exists { yes.clone() } else { no.clone() });
+                                            ui.label(if row.public_readonly { yes.clone() } else { no.clone() });
+                                            ui.horizontal(|ui| {
+                                                if confirm_delete.as_deref() == Some(row.id.as_str()) {
+                                                    ui.label(egui::RichText::new("Delete?").strong());
+                                                    if ui.button("Yes").clicked() {
+                                                        do_delete = Some((row.id.clone(), row.rev.clone()));
+                                                    }
+                                                    if ui.button("No").clicked() {
+                                                        cancel_delete = true;
+                                                    }
+                                                } else {
+                                                    if ui.button("Edit").clicked() {
+                                                        edit_user = Some(row.clone());
+                                                    }
+                                                    if ui.button("Delete").clicked() {
+                                                        request_delete = Some(row.id.clone());
+                                                    }
+                                                }
+                                            });
+                                            ui.end_row();
+                                        }
+                                    });
+                            });
+                        if let Some(row) = edit_user {
+                            self.user_name_input = row.name.clone();
+                            self.user_password_input.clear();
+                            self.user_roles_input = row.roles.clone();
+                            self.read_only_public = row.public_readonly;
+                            self.editing_user = Some(row);
+                            self.show_add_user = true;
+                        }
+                        if let Some(id) = request_delete {
+                            self.confirm_delete = Some(id);
+                        }
+                        if cancel_delete {
+                            self.confirm_delete = None;
+                        }
+                        if let Some((id, rev)) = do_delete {
+                            self.delete_user(ctx, &id, &rev);
+                        }
+                    }
+                } else if let Some(db) = self.selected_db.clone() {
+                    if self.doc_loading || self.doc_json.is_some() {
+                        let mut editor_doc = self.doc_json.take();
+                        ui.horizontal(|ui| {
+                            if ui.button("Save").clicked() {
+                                if let Some(d) = editor_doc.clone() {
+                                    self.doc_json = Some(d);
+                                    let id = self.selected_doc.clone().unwrap_or_default();
+                                    self.save_doc(ctx, &db, &id);
+                                }
+                            }
+                            if ui.button("Reload").clicked() {
+                                self.doc_json = None;
+                                self.doc_loading = true;
+                                let id = self.selected_doc.clone().unwrap_or_default();
+                                self.load_doc(ctx, &db, &id);
+                                editor_doc = None;
+                            }
+                        });
+                        if self.doc_loading {
+                            ui.label("Loading document...");
+                        } else if let Some(mut d) = editor_doc {
+                            ui.separator();
+                            egui::ScrollArea::both()
+                                .id_source("doc_editor_scroll")
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    ui.vertical(|ui| {
+                                        json_editor(ui, &mut d, &mut self.new_key_input);
+                                    });
+                                });
+                            self.doc_json = Some(d);
+                        }
+                    } else {
+                    ui.horizontal(|ui| {
                         if ui.button("Reload").clicked() {
                             self.doc_list.clear();
                             self.selected_doc = None;
+                            self.doc_json = None;
+                            self.doc_loading = false;
                             self.load_docs(ctx, &db);
                         }
                     });
@@ -1002,9 +2178,13 @@ impl eframe::App for MyEguiApp {
                             });
                         if let Some(id) = clicked_doc {
                             self.selected_doc = Some(id.clone());
+                            self.doc_loading = true;
+                            self.doc_json = None;
                             self.log_lines
                                 .push_str(&format!("\nSelected document: {id}"));
+                            self.load_doc(ctx, &db, &id);
                         }
+                    }
                     }
                 } else if !self.db_infos.is_empty() {
                     ui.label("Databases Info");
@@ -1014,7 +2194,7 @@ impl eframe::App for MyEguiApp {
                         .show(ui, |ui| {
                             egui::Grid::new("db_info_grid")
                                 .striped(true)
-                                .num_columns(6)
+                                .num_columns(7)
                                 .spacing([16.0, 6.0])
                                 .show(ui, |ui| {
                                     ui.strong("Database");
@@ -1022,6 +2202,7 @@ impl eframe::App for MyEguiApp {
                                     ui.strong("Deleted");
                                     ui.strong("Data");
                                     ui.strong("Disk");
+                                    ui.strong("Public");
                                     ui.strong("Compacting");
                                     ui.end_row();
                                     let mut clicked_db: Option<String> = None;
@@ -1043,6 +2224,11 @@ impl eframe::App for MyEguiApp {
                                         );
                                         ui.label(Self::format_bytes(r.data_size));
                                         ui.label(Self::format_bytes(r.disk_size));
+                                        match r.public {
+                                            Some(true) => ui.label(egui::RichText::new("yes").color(egui::Color32::from_rgb(110, 210, 110)).strong()),
+                                            Some(false) => ui.label(egui::RichText::new("no").color(egui::Color32::from_gray(150))),
+                                            None => ui.label(egui::RichText::new("...").weak()),
+                                        };
                                         ui.label(match r.compact_running {
                                             Some(true) => "yes",
                                             Some(false) => "no",
@@ -1055,6 +2241,8 @@ impl eframe::App for MyEguiApp {
                                         self.selected_db = Some(db.clone());
                                         self.doc_list.clear();
                                         self.selected_doc = None;
+                                        self.doc_json = None;
+                                        self.doc_loading = false;
                                         self.doc_filter.clear();
                                         self.log_lines.push_str(&format!("\nSelected database: {db}"));
                                         self.load_docs(ctx, &db);
@@ -1090,6 +2278,8 @@ impl eframe::App for MyEguiApp {
                                     self.selected_db = Some(db.clone());
                                     self.doc_list.clear();
                                     self.selected_doc = None;
+                                    self.doc_json = None;
+                                    self.doc_loading = false;
                                     self.doc_filter.clear();
                                     self.log_lines.push_str(&format!("\nSelected database: {db}"));
                                     self.load_docs(ctx, db);
