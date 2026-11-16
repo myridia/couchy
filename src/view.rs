@@ -1,6 +1,5 @@
 use crate::config::AppConfig;
 use crate::config::Args;
-use async_std::fs;
 use couch_rs::Client;
 use couch_rs::database::Database;
 use couch_rs::types::query::{QueriesParams, QueryParams};
@@ -9,7 +8,6 @@ use couch_rs::document::DocumentCollection;
 use couch_rs::document::TypedCouchDocument;
 use couch_rs::types::find::FindQuery;
 use futures::future::join_all;
-use homedir::my_home;
 use serde_json::Value;
 use serde_json::json;
 
@@ -20,6 +18,7 @@ use tokio::sync::{
 
 use std::collections::HashMap;
 use std::error::Error;
+use std::sync::{Arc, Mutex};
 
 // https://docs.rs/couch_rs/latest/couch_rs/database/struct.Database.html#method.remove
 
@@ -183,62 +182,213 @@ pub async fn delete_by_key(config: &AppConfig, args: Args) -> Result<(), Box<dyn
     Ok(())
 }
 
-pub async fn save_all_server_design(config: &AppConfig) -> Result<(), Box<dyn Error>> {
-    print!("...save_all_server_design fn");
-    let client = Client::new(&config.host, &config.user, &config.password).unwrap();
-    let dbs = client.list_dbs().await?;
-    //    dbs.iter().for_each(|db| println!("Database: {}", db));
-    for i in dbs {
-        if !i.to_string().starts_with("_") {
-            let mut config2 = config.clone();
-            config2.database = i;
-            //let new_config = config.borrow().clone();
-            println!("...Database: {}", config2.database);
-
-            let _r = save_all_design(&config2).await;
+pub async fn save_all_server_design(
+    config: &AppConfig,
+    base_dir: &std::path::Path,
+    server_name: &str,
+    pending: Option<Arc<Mutex<Vec<String>>>>,
+    ctx: Option<eframe::egui::Context>,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let report = |msg: String, pending: &Option<Arc<Mutex<Vec<String>>>>, ctx: &Option<eframe::egui::Context>| {
+        println!("{msg}");
+        if let Some(p) = pending {
+            if let Ok(mut q) = p.lock() {
+                q.push(msg);
+            }
         }
+        if let Some(c) = ctx {
+            c.request_repaint();
+        }
+    };
+
+    report("Connecting to server...".to_string(), &pending, &ctx);
+    let client = Client::new(&config.host, &config.user, &config.password)
+        .map_err(|e| -> Box<dyn Error + Send + Sync> { e.to_string().into() })?;
+    let dbs = client
+        .list_dbs()
+        .await
+        .map_err(|e| -> Box<dyn Error + Send + Sync> { e.to_string().into() })?;
+
+    let safe_server = server_name
+        .replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_")
+        .trim()
+        .to_string();
+    let server_dir = base_dir.join(if safe_server.is_empty() { "server" } else { &safe_server });
+    report(format!("Saving designs to {}", server_dir.display()), &pending, &ctx);
+
+    let total_dbs = dbs.len();
+    for (idx, dbname) in dbs.into_iter().enumerate() {
+        if dbname.starts_with('_') {
+            continue;
+        }
+        report(
+            format!("[{}/{}] Saving designs: {}", idx + 1, total_dbs, dbname),
+            &pending,
+            &ctx,
+        );
+        let mut config2 = config.clone();
+        config2.database = dbname;
+        save_all_design(&config2, &server_dir, pending.clone(), ctx.clone()).await?;
     }
+    report("Save all Designs finished.".to_string(), &pending, &ctx);
     Ok(())
 }
 
-pub async fn save_all_design(config: &AppConfig) -> Result<(), Box<dyn Error>> {
-    let home = my_home().unwrap().unwrap();
-    let client = Client::new(&config.host, &config.user, &config.password).unwrap();
-    let db = client.db(&config.database).await;
+pub async fn save_all_design(
+    config: &AppConfig,
+    base_dir: &std::path::Path,
+    pending: Option<Arc<Mutex<Vec<String>>>>,
+    ctx: Option<eframe::egui::Context>,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let report = |msg: String, pending: &Option<Arc<Mutex<Vec<String>>>>, ctx: &Option<eframe::egui::Context>| {
+        println!("{msg}");
+        if let Some(p) = pending {
+            if let Ok(mut q) = p.lock() {
+                q.push(msg);
+            }
+        }
+        if let Some(c) = ctx {
+            c.request_repaint();
+        }
+    };
 
-    if db.is_ok() {
-        let mut o = QueryParams::default();
-        o.start_key = Some("_design".to_string());
-        o.end_key = Some("_design0".to_string());
-        //        o.limit = Some(3);
-        o.include_docs = Some(true);
+    let client = Client::new(&config.host, &config.user, &config.password)
+        .map_err(|e| -> Box<dyn Error + Send + Sync> { e.to_string().into() })?;
+    let db = client
+        .db(&config.database)
+        .await
+        .map_err(|e| -> Box<dyn Error + Send + Sync> { e.to_string().into() })?;
 
-        let mut collections = db
-            .unwrap()
-            .query_many_all_docs(QueriesParams::new(vec![o]))
-            .await?;
+    let mut o = QueryParams::default();
+    o.start_key = Some("_design".to_string());
+    o.end_key = Some("_design0".to_string());
+    o.include_docs = Some(true);
 
-        //let mut c = _c.iter_mut();
-        let mut collections = collections.iter_mut();
-        let a = collections.next().unwrap();
+    let mut collections = db
+        .query_many_all_docs(QueriesParams::new(vec![o]))
+        .await
+        .map_err(|e| -> Box<dyn Error + Send + Sync> { e.to_string().into() })?;
 
+    let safe_db = config.database.replace(['/', '\\'], "_");
+    let db_dir = base_dir.join(&safe_db);
+    std::fs::create_dir_all(&db_dir)
+        .map_err(|e| -> Box<dyn Error + Send + Sync> { e.to_string().into() })?;
+
+    let mut saved_count: usize = 0;
+    if let Some(a) = collections.iter_mut().next() {
         for i in a.rows.clone() {
-            let doc = i.doc.unwrap();
-            let mut j = json::parse(&doc.to_string()).unwrap();
-            j.remove("_rev");
-
-            let filename = format!(
-                "{0}/Documents/{1}--{2}.json",
-                home.display(),
-                &config.database,
-                j["_id"].to_string().replace("/", "__")
-            );
-            let data = j.dump();
-            println!("...save {0}", filename);
-            let _r = fs::write(filename, data).await;
+            if let Some(doc) = i.doc {
+                let mut j = json::parse(&doc.to_string()).unwrap();
+                j.remove("_rev");
+                let safe_id = j["_id"].to_string().replace(['/', '\\'], "__");
+                let filename = db_dir.join(format!("{safe_id}.json"));
+                let data = j.dump();
+                tokio::fs::write(&filename, data)
+                    .await
+                    .map_err(|e| -> Box<dyn Error + Send + Sync> { e.to_string().into() })?;
+                saved_count += 1;
+            }
         }
     }
-    //return codes;
+    report(
+        format!("  {}: {} design documents saved.", config.database, saved_count),
+        &pending,
+        &ctx,
+    );
 
+    Ok(())
+}
+
+pub async fn save_all_server_dbs(
+    base_path: &std::path::Path,
+    server_name: &str,
+    config: &AppConfig,
+    pending: Option<Arc<Mutex<Vec<String>>>>,
+    ctx: Option<eframe::egui::Context>,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let report = |msg: String, pending: &Option<Arc<Mutex<Vec<String>>>>, ctx: &Option<eframe::egui::Context>| {
+        println!("{msg}");
+        if let Some(p) = pending {
+            if let Ok(mut q) = p.lock() {
+                q.push(msg);
+            }
+        }
+        if let Some(c) = ctx {
+            c.request_repaint();
+        }
+    };
+
+    report("Connecting to server...".to_string(), &pending, &ctx);
+    let client = Client::new(&config.host, &config.user, &config.password)
+        .map_err(|e| -> Box<dyn Error + Send + Sync> { e.to_string().into() })?;
+    let dbs = client
+        .list_dbs()
+        .await
+        .map_err(|e| -> Box<dyn Error + Send + Sync> { e.to_string().into() })?;
+    report(format!("Found {} databases.", dbs.len()), &pending, &ctx);
+
+    let safe_server = server_name
+        .replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_")
+        .trim()
+        .to_string();
+    let server_dir = base_path.join(if safe_server.is_empty() { "server" } else { &safe_server });
+    report(format!("Saving to {}", server_dir.display()), &pending, &ctx);
+
+    let total_dbs = dbs.len();
+    for (idx, dbname) in dbs.into_iter().enumerate() {
+        report(format!("[{}/{}] Saving database: {}", idx + 1, total_dbs, dbname), &pending, &ctx);
+        let db = client
+            .db(&dbname)
+            .await
+            .map_err(|e| -> Box<dyn Error + Send + Sync> { e.to_string().into() })?;
+        let safe_db = dbname.replace(['/', '\\'], "_");
+        let db_dir = server_dir.join(&safe_db);
+        std::fs::create_dir_all(&db_dir)
+            .map_err(|e| -> Box<dyn Error + Send + Sync> { e.to_string().into() })?;
+
+        let limit = 1000u64;
+        let mut bookmark: Option<String> = None;
+        let mut saved_count: usize = 0;
+        loop {
+            let mut find = FindQuery::find_all().limit(limit);
+            if let Some(b) = &bookmark {
+                find = find.bookmark(b);
+            }
+            let docs = db
+                .find_raw(&find)
+                .await
+                .map_err(|e| -> Box<dyn Error + Send + Sync> { e.to_string().into() })?;
+            if docs.rows.is_empty() {
+                break;
+            }
+            for row in &docs.rows {
+                let mut doc = row.clone();
+                if let Some(obj) = doc.as_object_mut() {
+                    obj.remove("_rev");
+                }
+                let id = doc["_id"].as_str().unwrap_or("unknown").to_string();
+                let safe_id = id.replace(['/', '\\'], "__");
+                let filename = db_dir.join(format!("{safe_id}.json"));
+                let data = serde_json::to_string_pretty(&doc)
+                    .map_err(|e| -> Box<dyn Error + Send + Sync> { e.to_string().into() })?;
+                tokio::fs::write(&filename, data)
+                    .await
+                    .map_err(|e| -> Box<dyn Error + Send + Sync> { e.to_string().into() })?;
+                saved_count += 1;
+            }
+            if saved_count % 1000 == 0 || docs.rows.len() < limit as usize {
+                report(format!("  {}: {} documents saved so far...", dbname, saved_count), &pending, &ctx);
+            }
+            bookmark = docs.bookmark.clone();
+            if docs.rows.len() < limit as usize {
+                break;
+            }
+            if bookmark.is_none() {
+                break;
+            }
+        }
+        report(format!("Completed {}: {} documents saved.", dbname, saved_count), &pending, &ctx);
+    }
+    report("Save all Docs finished.".to_string(), &pending, &ctx);
     Ok(())
 }
