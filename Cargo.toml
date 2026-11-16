@@ -27,3 +27,4 @@ async-std = {version = "*", features = ["attributes"]}
 
 tokio = { version = "*", features = ["macros", "rt-multi-thread"] }
 tokio-macros = { version = "0.2.0-alpha.6" }
+sqlx = { version = "*", features = ["runtime-tokio", "mysql", "json"] }

@@ -3,7 +3,6 @@ use homedir::my_home;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
-use std::path::Path;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -14,7 +13,9 @@ pub struct Args {
     pub save: String,
     #[arg(short, long, default_value = "")]
     pub delete: String,
-    #[arg(short = 'm', long, default_value = "")]
+    #[arg(short, long, default_value = "")]
+    pub migrate: String,
+    #[arg(short = 'y', long, default_value = "")]
     pub key: String,
     #[arg(short = 'k', long, default_value = "")]
     pub value: String,
@@ -24,6 +25,10 @@ pub struct Args {
     pub db: String,
     #[arg(short = 'b', long, default_value = "")]
     pub repl: String,
+    #[arg(short = 'q', long, default_value = "")]
+    pub query: String,
+    #[arg(short = 't', long, default_value = "")]
+    pub table: String,
 }
 
 pub fn get_config() -> AppConfig {
@@ -39,12 +44,7 @@ pub fn get_config() -> AppConfig {
                     eprintln!("{err}");
                 }
             }
-            AppConfig {
-                host: "".to_string(),
-                user: "".to_string(),
-                password: "x".to_string(),
-                database: "".to_string(),
-            }
+            AppConfig::default()
         }
     };
     //println!("{:?}", config);
@@ -75,6 +75,14 @@ pub struct AppConfig {
     pub user: String,
     pub database: String,
     pub password: String,
+    #[serde(default)]
+    pub mysql_host: String,
+    #[serde(default)]
+    pub mysql_user: String,
+    #[serde(default)]
+    pub mysql_password: String,
+    #[serde(default)]
+    pub mysql_database: String,
 }
 
 impl Default for AppConfig {
@@ -84,27 +92,29 @@ impl Default for AppConfig {
             user: "".to_string(),
             password: "".to_string(),
             database: "".to_string(),
+            mysql_host: "127.0.0.1".to_string(),
+            mysql_user: "root".to_string(),
+            mysql_password: "".to_string(),
+            mysql_database: "".to_string(),
         }
     }
 }
 
 fn load_or_initialize() -> Result<AppConfig, ConfigError> {
-    //  https://dev.to/zofia/why-do-we-need-configuration-creating-and-handling-configuration-files-in-rust-4a46?ysclid=m00bsa1iuz12379992
-    let home = my_home().unwrap().unwrap();
-    let _config_path = &format!("{0}/config.toml", home.display());
-    let config_path = Path::new(_config_path);
-    println!("{:?}", config_path);
+    let home = my_home()
+        .ok()
+        .flatten()
+        .ok_or_else(|| ConfigError::IoError(io::Error::new(io::ErrorKind::NotFound, "Cannot determine home directory")))?;
+    let config_path = home.join("config.toml");
     if config_path.exists() {
-        let content = fs::read_to_string(config_path)?;
+        let content = fs::read_to_string(&config_path)?;
         let config = toml::from_str(&content)?;
         return Ok(config);
     }
 
-    // The config file does not exist, so we must initialize it with the default values.
-
     let config = AppConfig::default();
     let toml = toml::to_string(&config).unwrap();
 
-    fs::write(config_path, toml)?;
+    fs::write(&config_path, toml)?;
     Ok(config)
 }

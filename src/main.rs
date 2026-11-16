@@ -3,6 +3,7 @@ use couchy::config::AppConfig;
 use couchy::config::Args;
 use couchy::config::get_config;
 use couchy::view::*;
+use couchy::mysql::*;
 use eframe::egui;
 use std::error::Error;
 //use tokio::runtime::Runtime;
@@ -34,16 +35,29 @@ async fn main() {
         } else if args.save == "all_server_design" {
             let _r = save_all_server_design(&config).await;
         } else if args.delete == "orphans" {
-            //println!("...delete orphans");
             let _r = delete_orphans(&config, args).await;
         } else if args.delete == "by_key" {
             if args.db != "" && args.key != "" && args.value != "" {
-                //println!("...delete by_key");
-                //println!("db: {}",args.db);
-                //println!("key: {}",args.key);
-                //println!("value: {}",args.value);
-                //println!("value: {}",args.value);
                 let _r = delete_by_key(&config, args).await;
+            }
+        } else if args.migrate == "table" {
+            if args.table != "" {
+                let query = if args.query.is_empty() {
+                    format!("SELECT * FROM {}", args.table)
+                } else {
+                    args.query.clone()
+                };
+                let _r = migrate_table(&config, &args.table, &query).await;
+            } else {
+                eprintln!("Error: --table is required for migrate table");
+            }
+        } else if args.migrate == "query" {
+            if args.query.is_empty() {
+                eprintln!("Error: --query is required for migrate query");
+            } else if args.db.is_empty() {
+                eprintln!("Error: --db is required for migrate query (target CouchDB database)");
+            } else {
+                let _r = migrate_query(&config, &args.query, &args.db).await;
             }
         }
     }
