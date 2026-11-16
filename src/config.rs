@@ -30,6 +30,14 @@ pub struct Args {
     pub query: String,
     #[arg(short = 't', long, default_value = "")]
     pub table: String,
+    #[arg(short = 'a', long, default_value = "")]
+    pub action: String,
+    #[arg(long, default_value = "")]
+    pub roles: String,
+    #[arg(long, default_value_t = false)]
+    pub readonly: bool,
+    #[arg(long, default_value_t = false)]
+    pub yes: bool,
 }
 
 pub fn get_config() -> AppConfig {

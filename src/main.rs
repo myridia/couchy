@@ -1,4 +1,6 @@
 use clap::Parser;
+use couchy::commands as cmd;
+use couchy::commands::{AccessTestResult, DbInfoRow, UserRow};
 use couchy::config::{get_config, save_config, AppConfig, Args, ServerConfig};
 use couchy::mysql::*;
 use couchy::view::*;
@@ -21,6 +23,16 @@ async fn main() {
         );
     } else {
         println!("...run console");
+        if !args.action.is_empty() {
+            match cli_action(&args).await {
+                Ok(out) => println!("{out}"),
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            }
+            return;
+        }
         let config = get_config();
         if args.save == "all_design" {
             let base_dir = homedir::my_home()
@@ -65,195 +77,296 @@ async fn main() {
     }
 }
 
-struct DbInfoRow {
-    name: String,
-    doc_count: Option<u64>,
-    doc_del_count: Option<u64>,
-    data_size: Option<u64>,
-    disk_size: Option<u64>,
-    compact_running: Option<bool>,
-    public: Option<bool>,
+fn req_db(args: &Args) -> Result<String, String> {
+    let db = args.db.trim().to_string();
+    if db.is_empty() {
+        Err("--db is required for this action".to_string())
+    } else {
+        Ok(db)
+    }
 }
 
-struct AccessTestRow {
-    name: String,
-    ok: bool,
-    detail: String,
+fn value_flag(arg: &str) -> Result<serde_json::Value, String> {
+    let s = if let Some(path) = arg.strip_prefix('@') {
+        std::fs::read_to_string(path).map_err(|e| format!("Cannot read {path}: {e}"))?
+    } else {
+        arg.to_string()
+    };
+    serde_json::from_str(&s).map_err(|e| format!("Not valid JSON: {e}"))
 }
+
+fn format_bytes_opt(size: Option<u64>) -> String {
+    match size {
+        None => "-".to_string(),
+        Some(v) => {
+            const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+            let mut value = v as f64;
+            let mut unit = 0;
+            while value >= 1024.0 && unit < UNITS.len() - 1 {
+                value /= 1024.0;
+                unit += 1;
+            }
+            if unit == 0 {
+                format!("{v} {}", UNITS[unit])
+            } else {
+                format!("{value:.1} {}", UNITS[unit])
+            }
+        }
+    }
+}
+
+async fn cli_action(args: &Args) -> Result<String, String> {
+    let config = get_config();
+    match args.action.as_str() {
+        "connect" => cmd::connect(&config).await,
+        "get_dbs_info" | "db_info" => {
+            let v = cmd::get_dbs_info(&config).await?;
+            let rows = cmd::parse_db_infos(&v);
+            let mut out = String::new();
+            out.push_str("Database  Docs  Deleted  Data  Disk  Compacting  Public\n");
+            for r in &rows {
+                let public = cmd::check_public_db(&config, &r.name).await.unwrap_or(false);
+                out.push_str(&format!(
+                    "{:30} {:>6} {:>7} {:>8} {:>8} {:<10} {}\n",
+                    r.name,
+                    r.doc_count.map(|v| v.to_string()).unwrap_or("-".to_string()),
+                    r.doc_del_count.map(|v| v.to_string()).unwrap_or("-".to_string()),
+                    format_bytes_opt(r.data_size),
+                    format_bytes_opt(r.disk_size),
+                    r.compact_running.map(|v| if v { "yes" } else { "no" }).unwrap_or("-"),
+                    if public { "yes" } else { "no" }
+                ));
+            }
+            out.push_str(&format!("{} databases", rows.len()));
+            Ok(out)
+        }
+        "list_docs" => {
+            let db = req_db(args)?;
+            let docs = cmd::list_docs(&config, &db).await?;
+            let mut out = String::new();
+            for (id, rev) in &docs {
+                out.push_str(&format!("{id}  {rev}\n"));
+            }
+            out.push_str(&format!("{} documents", docs.len()));
+            Ok(out)
+        }
+        "get_doc" => {
+            let db = req_db(args)?;
+            let id = args.key.trim().to_string();
+            if id.is_empty() {
+                return Err("--key (document id) is required".to_string());
+            }
+            let doc = cmd::get_doc(&config, &db, &id).await?;
+            Ok(serde_json::to_string_pretty(&doc).unwrap_or_else(|_| doc.to_string()))
+        }
+        "create_doc" => {
+            let db = req_db(args)?;
+            let mut doc = value_flag(&args.value)?;
+            let id = args.key.trim().to_string();
+            if !id.is_empty() && doc.get("_id").is_none() {
+                doc["_id"] = serde_json::Value::String(id.clone());
+            }
+            let id_arg = if id.is_empty() {
+                doc.get("_id").and_then(|i| i.as_str()).unwrap_or("").to_string()
+            } else {
+                id
+            };
+            let created = cmd::create_doc(&config, &db, &id_arg, &doc).await?;
+            let new_id = created
+                .get("id")
+                .and_then(|i| i.as_str())
+                .unwrap_or(id_arg.as_str())
+                .to_string();
+            Ok(format!(
+                "Created document {new_id} in {db} [{}]",
+                created.get("rev").and_then(|r| r.as_str()).unwrap_or("?")
+            ))
+        }
+        "save_doc" => {
+            let db = req_db(args)?;
+            let doc = value_flag(&args.value)?;
+            let id = args.key.trim().to_string();
+            let saved = if id.is_empty() {
+                cmd::save_doc(&config, &db, &doc).await?
+            } else {
+                let mut d = doc.clone();
+                d["_id"] = serde_json::Value::String(id);
+                cmd::save_doc(&config, &db, &d).await?
+            };
+            Ok(format!(
+                "Saved document {} [{}]",
+                saved.get("id").and_then(|i| i.as_str()).unwrap_or("?"),
+                saved.get("rev").and_then(|r| r.as_str()).unwrap_or("?")
+            ))
+        }
+        "delete_all_docs" => {
+            let db = req_db(args)?;
+            if !args.yes {
+                return Err("delete_all_docs is destructive; pass --yes to confirm".to_string());
+            }
+            cmd::delete_all_docs(&config, &db, None, None).await
+        }
+        "purge_deleted_docs" => {
+            if !args.yes {
+                return Err("purge_deleted_docs is destructive; pass --yes to confirm".to_string());
+            }
+            let db = args.db.trim().to_string();
+            if db.is_empty() {
+                cmd::purge_server_deleted_docs(&config, None, None).await
+            } else {
+                cmd::purge_db_deleted_docs(&config, &db, None, None).await
+            }
+        }
+        "list_users" => {
+            let users = cmd::list_users(&config).await?;
+            let mut out = String::new();
+            out.push_str("Name  Roles  Per-user DB  Public R/O\n");
+            for u in &users {
+                let peruser = cmd::user_peruser_db_exists(&config, &u.name).await.unwrap_or(false);
+                let readonly = if peruser {
+                    let hex: String = u.name.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+                    let db = format!("userdb-{hex}");
+                    cmd::check_readonly_db(&config, &db).await.unwrap_or(false)
+                } else {
+                    false
+                };
+                out.push_str(&format!(
+                    "{:30} {:20} {:^10} {:^8}\n",
+                    u.name,
+                    if u.roles.is_empty() { "-" } else { u.roles.as_str() },
+                    if peruser { "yes" } else { "no" },
+                    if readonly { "yes" } else { "no" }
+                ));
+            }
+            out.push_str(&format!("{} users", users.len()));
+            Ok(out)
+        }
+        "create_user" => {
+            let name = args.key.trim().to_string();
+            if name.is_empty() {
+                return Err("--key (username) is required".to_string());
+            }
+            let password = args.value.clone();
+            let roles: Vec<String> = args
+                .roles
+                .split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect();
+            let existing = cmd::find_user(&config, &name).await?.map(|u| u.doc);
+            let msg = cmd::save_user(&config, &name, &password, roles, existing).await?;
+            if args.readonly {
+                let extra = cmd::setup_readonly_db(
+                    config.host.clone(),
+                    config.user.clone(),
+                    config.password.clone(),
+                    name,
+                )
+                .await;
+                return Ok(format!("{msg}\n{}", extra.join("\n")));
+            }
+            Ok(msg)
+        }
+        "delete_user" => {
+            if !args.yes {
+                return Err("delete_user is destructive; pass --yes to confirm".to_string());
+            }
+            let name = args.key.trim().to_string();
+            if name.is_empty() {
+                return Err("--key (username) is required".to_string());
+            }
+            let existing = cmd::find_user(&config, &name)
+                .await?
+                .ok_or_else(|| format!("User {name} not found"))?;
+            cmd::delete_user(&config, &existing.id, &existing.rev).await
+        }
+        "check_public" => {
+            let db = req_db(args)?;
+            let public = cmd::check_public_db(&config, &db).await?;
+            Ok(format!(
+                "{}: {}",
+                db,
+                if public { "public read access: yes" } else { "public read access: no" }
+            ))
+        }
+        "check_readonly" => {
+            let db = req_db(args)?;
+            let readonly = cmd::check_readonly_db(&config, &db).await?;
+            Ok(format!(
+                "{}: {}",
+                db,
+                if readonly { "read-only (design auth present)" } else { "not read-only" }
+            ))
+        }
+        "access_test" => {
+            let db = req_db(args)?;
+            let results = cmd::access_test(&config, &db, None, None).await?;
+            let mut out = String::new();
+            out.push_str("Test  Result  Detail\n");
+            for r in &results {
+                out.push_str(&format!(
+                    "{:30} {:<8} {}\n",
+                    r.name,
+                    if r.ok { "OK" } else { "FAILED" },
+                    r.detail
+                ));
+            }
+            let ok = results.iter().filter(|r| r.ok).count();
+            out.push_str(&format!("{}/{} tests OK", ok, results.len()));
+            Ok(out)
+        }
+        "save_all_docs" => {
+            let base_dir = homedir::my_home()
+                .ok()
+                .flatten()
+                .map(|h| h.join("Documents"))
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+            let server_name: String = config
+                .host
+                .trim_end_matches('/')
+                .rsplit('/')
+                .next()
+                .unwrap_or("server")
+                .to_string();
+            couchy::view::save_all_server_dbs(&base_dir, &server_name, &config, None, None)
+                .await
+                .map(|_| format!("Save all Docs completed: {}", base_dir.display()))
+                .map_err(|e| format!("Save all Docs failed: {e}"))
+        }
+        "save_all_design" => {
+            let base_dir = homedir::my_home()
+                .ok()
+                .flatten()
+                .map(|h| h.join("Documents"))
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+            couchy::view::save_all_design(&config, &base_dir, None, None)
+                .await
+                .map(|_| format!("Save all design docs completed: {}", base_dir.display()))
+                .map_err(|e| format!("Save all design docs failed: {e}"))
+        }
+        "save_all_server_design" => {
+            let base_dir = homedir::my_home()
+                .ok()
+                .flatten()
+                .map(|h| h.join("Documents"))
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+            couchy::view::save_all_server_design(&config, &base_dir, &config.host, None, None)
+                .await
+                .map(|_| format!("Save all server design docs completed: {}", base_dir.display()))
+                .map_err(|e| format!("Save all server design docs failed: {e}"))
+        }
+        other => Err(format!(
+            "Unknown action: {other}. Available: connect, get_dbs_info, list_docs, get_doc, create_doc, save_doc, delete_all_docs, purge_deleted_docs, list_users, create_user, delete_user, check_public, check_readonly, access_test, save_all_docs, save_all_design, save_all_server_design"
+        )),
+    }
+}
+
+type AccessTestRow = AccessTestResult;
 
 struct DocRow {
     id: String,
     rev: String,
-}
-
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-struct UserRow {
-    id: String,
-    name: String,
-    rev: String,
-    roles: String,
-    doc: serde_json::Value,
-    #[serde(default)]
-    peruser_db_exists: bool,
-    #[serde(default)]
-    public_readonly: bool,
-}
-
-fn test_path(database: &str) -> String {
-    let db = database.trim();
-    if db.is_empty() {
-        "/_all_dbs".to_string()
-    } else {
-        format!("/{}", db.replace('/', "%2F"))
-    }
-}
-
-async fn fetch_rev(
-    http: &reqwest::Client,
-    base: &str,
-    user: &str,
-    password: &str,
-    path: &str,
-) -> Option<String> {
-    let url = format!("{base}{path}");
-    let req = http.get(&url);
-    let req = if !user.is_empty() || !password.is_empty() {
-        req.basic_auth(user, Some(password))
-    } else {
-        req
-    };
-    match req.send().await {
-        Ok(resp) if resp.status().is_success() => {
-            let v = resp.json::<serde_json::Value>().await.ok()?;
-            v.get("_rev").and_then(|r| r.as_str()).map(|s| s.to_string())
-        }
-        _ => None,
-    }
-}
-
-async fn get_json(
-    http: &reqwest::Client,
-    base: &str,
-    user: &str,
-    password: &str,
-    path: &str,
-) -> (u16, Option<serde_json::Value>) {
-    let url = format!("{base}{path}");
-    let req = http.get(&url);
-    let req = if !user.is_empty() || !password.is_empty() {
-        req.basic_auth(user, Some(password))
-    } else {
-        req
-    };
-    match req.send().await {
-        Ok(resp) => {
-            let status = resp.status().as_u16();
-            let body = resp.json::<serde_json::Value>().await.ok();
-            (status, body)
-        }
-        Err(_) => (0, None),
-    }
-}
-
-async fn put_json(
-    http: &reqwest::Client,
-    base: &str,
-    user: &str,
-    password: &str,
-    path: &str,
-    body: &str,
-) -> (u16, String) {
-    let url = format!("{base}{path}");
-    let req = http
-        .put(&url)
-        .header("Accept", "application/json")
-        .header("Content-Type", "application/json")
-        .body(body.to_string());
-    let req = if !user.is_empty() || !password.is_empty() {
-        req.basic_auth(user, Some(password))
-    } else {
-        req
-    };
-    match req.send().await {
-        Ok(resp) => {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
-            (status, body)
-        }
-        Err(e) => (0, e.to_string()),
-    }
-}
-
-async fn purge_db_deleted_docs<F: Fn(String)>(
-    http: &reqwest::Client,
-    base: &str,
-    user: &str,
-    password: &str,
-    dbname: &str,
-    send: F,
-) -> Result<String, String> {
-    let db_enc = dbname.replace('/', "%2F");
-    let (status, parsed) = get_json(http, base, user, password, &format!("/{db_enc}/_changes")).await;
-    if status != 200 {
-        return Err(format!("[{status}] GET _changes failed"));
-    }
-    let parsed = parsed.ok_or_else(|| "GET _changes failed: unexpected response".to_string())?;
-
-    let mut pairs: Vec<(String, String)> = Vec::new();
-    if let Some(results) = parsed.get("results").and_then(|r| r.as_array()) {
-        for row in results {
-            let deleted = row.get("deleted").and_then(|d| d.as_bool()).unwrap_or(false);
-            if !deleted {
-                continue;
-            }
-            let id = row.get("id").and_then(|i| i.as_str()).unwrap_or("");
-            let rev = row
-                .get("changes")
-                .and_then(|c| c.as_array())
-                .and_then(|a| a.first())
-                .and_then(|c| c.get("rev").and_then(|r| r.as_str()))
-                .unwrap_or("");
-            if !id.is_empty() && !rev.is_empty() {
-                pairs.push((id.to_string(), rev.to_string()));
-            }
-        }
-    }
-    let total = pairs.len();
-    if total == 0 {
-        return Ok(format!("{dbname}: 0 deleted documents to purge"));
-    }
-    let mut purged = 0usize;
-    for chunk in pairs.chunks(99) {
-        let mut map = serde_json::Map::new();
-        for (id, rev) in chunk {
-            map.insert(id.clone(), serde_json::json!([rev]));
-        }
-        let body = serde_json::Value::Object(map).to_string();
-        let purge_path = format!("/{db_enc}/_purge");
-        let resp = http
-            .post(format!("{base}{purge_path}"))
-            .header("Content-Type", "application/json")
-            .basic_auth(user, Some(password))
-            .body(body)
-            .send()
-            .await
-            .map_err(|e| format!("POST {purge_path} failed: {e}"))?;
-        let status = resp.status().as_u16();
-        let body = resp.text().await.unwrap_or_default();
-        if status != 200 && status != 201 && status != 202 {
-            let snippet: String = body.chars().take(200).collect();
-            return Err(format!("[{status}] POST {purge_path} failed: {snippet}"));
-        }
-        let v: serde_json::Value = serde_json::from_str(&body).unwrap_or(serde_json::json!({}));
-        let n = v
-            .get("purged")
-            .and_then(|p| p.as_object())
-            .map(|o| o.len())
-            .unwrap_or(chunk.len());
-        purged += n;
-        send(format!("  purged {purged}/{total} deleted documents..."));
-    }
-    Ok(format!("{dbname}: purged {purged} deleted documents"))
 }
 
 fn json_editor(ui: &mut egui::Ui, value: &mut serde_json::Value, new_key_input: &mut String) {
@@ -726,52 +839,6 @@ impl MyEguiApp {
         db.to_string()
     }
 
-    fn parse_db_infos(data: &serde_json::Value) -> Vec<DbInfoRow> {
-        let entries = if let Some(arr) = data.as_array() {
-            arr.clone()
-        } else if let Some(obj) = data.as_object() {
-            obj.iter()
-                .map(|(k, v)| serde_json::json!({ "key": k, "info": v }))
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-        let mut rows = Vec::new();
-        for entry in entries {
-            let info = entry.get("info").unwrap_or(&entry);
-            let name = info
-                .get("db_name")
-                .and_then(|v| v.as_str())
-                .or_else(|| entry.get("key").and_then(|v| v.as_str()))
-                .unwrap_or("?")
-                .to_string();
-            let doc_count = info.get("doc_count").and_then(|v| v.as_u64());
-            let doc_del_count = info.get("doc_del_count").and_then(|v| v.as_u64());
-            let data_size = info
-                .get("sizes")
-                .and_then(|s| s.get("active"))
-                .and_then(|v| v.as_u64())
-                .or_else(|| info.get("data_size").and_then(|v| v.as_u64()));
-            let disk_size = info
-                .get("sizes")
-                .and_then(|s| s.get("file"))
-                .and_then(|v| v.as_u64())
-                .or_else(|| info.get("disk_size").and_then(|v| v.as_u64()));
-            let compact_running = info.get("compact_running").and_then(|v| v.as_bool());
-            rows.push(DbInfoRow {
-                name,
-                doc_count,
-                doc_del_count,
-                data_size,
-                disk_size,
-                compact_running,
-                public: None,
-            });
-        }
-        rows
-    }
-
     fn format_bytes(size: Option<u64>) -> String {
         match size {
             None => "-".to_string(),
@@ -814,68 +881,31 @@ impl MyEguiApp {
         }
         tokio::spawn(async move {
             let msg = match action.as_str() {
-                "get_all_dbs" => match couch_rs::Client::new(&config.host, &config.user, &config.password) {
-                    Ok(client) => match client.list_dbs().await {
-                        Ok(dbs) => {
-                            let json = serde_json::to_string(&dbs).unwrap_or_else(|_| "[]".to_string());
-                            let log = if log_results {
-                                format!("GET /_all_dbs: {}", serde_json::to_string_pretty(&dbs).unwrap_or_else(|_| format!("{dbs:?}")))
-                            } else {
-                                format!("GET /_all_dbs: OK ({} databases)", dbs.len())
-                            };
-                            format!("DB_LIST|{json}|{log}")
-                        }
-                        Err(e) => format!("GET /_all_dbs failed: {e}"),
-                    },
+                "get_all_dbs" => match cmd::list_db_names(&config).await {
+                    Ok(dbs) => {
+                        let json = serde_json::to_string(&dbs).unwrap_or_else(|_| "[]".to_string());
+                        let log = if log_results {
+                            format!("GET /_all_dbs: {}", serde_json::to_string_pretty(&dbs).unwrap_or_else(|_| format!("{dbs:?}")))
+                        } else {
+                            format!("GET /_all_dbs: OK ({} databases)", dbs.len())
+                        };
+                        format!("DB_LIST|{json}|{log}")
+                    }
                     Err(e) => format!("GET /_all_dbs failed: {e}"),
                 },
-                "get_dbs_info" => {
-                    match couch_rs::Client::new(&config.host, &config.user, &config.password) {
-                        Ok(client) => match client.list_dbs().await {
-                            Ok(dbs) => {
-                                let base = config.host.trim_end_matches('/').to_string();
-                                let url = format!("{base}/_dbs_info");
-                                let body_json = serde_json::json!({ "keys": dbs.clone() }).to_string();
-                                let curl = Self::curl_command(&config.host, &config.user, &config.password, "POST", "/_dbs_info", Some(&body_json));
-                                let http = reqwest::Client::new();
-                                let req = http.post(&url).json(&serde_json::json!({"keys": dbs}));
-                                let req = if !config.user.is_empty() || !config.password.is_empty() {
-                                    req.basic_auth(&config.user, Some(&config.password))
-                                } else {
-                                    req
-                                };
-                                match req.send().await {
-                                    Ok(resp) => match resp.text().await {
-                                        Ok(body) => {
-                                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
-                                                let log = if log_results {
-                                                    format!(
-                                                        "{curl}\nPOST /_dbs_info: {}",
-                                                        serde_json::to_string_pretty(&v).unwrap_or_else(|_| body.clone())
-                                                    )
-                                                } else {
-                                                    format!("{curl}\nPOST /_dbs_info: OK")
-                                                };
-                                                let envelope = serde_json::json!({ "data": v, "log": log.clone() });
-                                                format!("DB_INFO|{}", serde_json::to_string(&envelope).unwrap_or(log))
-                                            } else {
-                                                if log_results {
-                                                    format!("{curl}\nPOST /_dbs_info: {body}")
-                                                } else {
-                                                    format!("{curl}\nPOST /_dbs_info: OK")
-                                                }
-                                            }
-                                        }
-                                        Err(e) => format!("GET /_dbs_info failed: {e}"),
-                                    },
-                                    Err(e) => format!("GET /_dbs_info failed: {e}"),
-                                }
-                            }
-                            Err(e) => format!("GET /_dbs_info failed: {e}"),
-                        },
-                        Err(e) => format!("GET /_dbs_info failed: {e}"),
+                "get_dbs_info" => match cmd::get_dbs_info(&config).await {
+                    Ok(v) => {
+                        let curl = Self::curl_command(&config.host, &config.user, &config.password, "POST", "/_dbs_info", None);
+                        let log = if log_results {
+                            format!("{curl}\nPOST /_dbs_info: {}", serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string()))
+                        } else {
+                            format!("{curl}\nPOST /_dbs_info: OK")
+                        };
+                        let envelope = serde_json::json!({ "data": v, "log": log });
+                        format!("DB_INFO|{}", serde_json::to_string(&envelope).unwrap_or(log))
                     }
-                }
+                    Err(e) => format!("POST /_dbs_info failed: {e}"),
+                },
                 _ => format!("Unknown action: {action}"),
             };
             println!("{msg}");
@@ -894,57 +924,21 @@ impl MyEguiApp {
         let curl = Self::curl_command(&config.host, &config.user, &config.password, "GET", &format!("/{}/_all_docs", db.replace('/', "%2F")), None);
         self.log_lines.push_str(&format!("\n{curl}"));
         tokio::spawn(async move {
-            let base = config.host.trim_end_matches('/').to_string();
-            let db_enc = db.replace('/', "%2F");
-            let url = format!("{base}/{db_enc}/_all_docs");
-            let http = reqwest::Client::new();
-            let req = http.get(&url);
-            let req = if !config.user.is_empty() || !config.password.is_empty() {
-                req.basic_auth(&config.user, Some(&config.password))
-            } else {
-                req
-            };
-            let msg = match req.send().await {
-                Ok(resp) => {
-                    let status = resp.status().as_u16();
-                    match resp.text().await {
-                        Ok(body) => match serde_json::from_str::<serde_json::Value>(&body) {
-                            Ok(v) => {
-                                let docs: Vec<serde_json::Value> = v
-                                    .get("rows")
-                                    .and_then(|r| r.as_array())
-                                    .cloned()
-                                    .unwrap_or_default()
-                                    .into_iter()
-                                    .map(|row| {
-                                        serde_json::json!({
-                                            "id": row
-                                                .get("id")
-                                                .or_else(|| row.get("key"))
-                                                .and_then(|x| x.as_str())
-                                                .unwrap_or(""),
-                                            "rev": row
-                                                .get("value")
-                                                .and_then(|v| v.get("rev"))
-                                                .and_then(|r| r.as_str())
-                                                .unwrap_or(""),
-                                        })
-                                    })
-                                    .collect();
-                                let count = docs.len();
-                                let envelope = serde_json::json!({
-                                    "docs": docs,
-                                    "log": format!("Loaded {count} document IDs from {db} [{status}]"),
-                                });
-                                format!(
-                                    "DOC_LIST|{}",
-                                    serde_json::to_string(&envelope).unwrap_or_default()
-                                )
-                            }
-                            Err(_) => format!("GET /{db}/_all_docs failed [{status}]: {body}"),
-                        },
-                        Err(e) => format!("GET /{db}/_all_docs failed: {e}"),
-                    }
+            let msg = match cmd::list_docs(&config, &db).await {
+                Ok(docs) => {
+                    let count = docs.len();
+                    let rows: Vec<serde_json::Value> = docs
+                        .into_iter()
+                        .map(|(id, rev)| serde_json::json!({ "id": id, "rev": rev }))
+                        .collect();
+                    let envelope = serde_json::json!({
+                        "docs": rows,
+                        "log": format!("Loaded {count} document IDs from {db}"),
+                    });
+                    format!(
+                        "DOC_LIST|{}",
+                        serde_json::to_string(&envelope).unwrap_or_default()
+                    )
                 }
                 Err(e) => format!("GET /{db}/_all_docs failed: {e}"),
             };
@@ -966,30 +960,9 @@ impl MyEguiApp {
         let curl = Self::curl_command(&config.host, &config.user, &config.password, "GET", &path, None);
         self.log_lines.push_str(&format!("\n{curl}"));
         tokio::spawn(async move {
-            let base = config.host.trim_end_matches('/').to_string();
-            let url = format!("{base}{path}");
-            let http = reqwest::Client::new();
-            let req = http.get(&url);
-            let req = if !config.user.is_empty() || !config.password.is_empty() {
-                req.basic_auth(&config.user, Some(&config.password))
-            } else {
-                req
-            };
-            let msg = match req.send().await {
-                Ok(resp) => {
-                    let status = resp.status().as_u16();
-                    match resp.text().await {
-                        Ok(body) => {
-                            if serde_json::from_str::<serde_json::Value>(&body).is_ok() && (200..300).contains(&status) {
-                                format!("DOC|{body}")
-                            } else {
-                                format!("DOC_ERR|GET {path} [{status}]: {body}")
-                            }
-                        }
-                        Err(e) => format!("DOC_ERR|GET {path} failed: {e}"),
-                    }
-                }
-                Err(e) => format!("DOC_ERR|GET {path} failed: {e}"),
+            let msg = match cmd::get_doc(&config, &db, &doc_id).await {
+                Ok(v) => format!("DOC|{}", serde_json::to_string(&v).unwrap_or_default()),
+                Err(e) => format!("DOC_ERR|{e}"),
             };
             println!("{msg}");
             if let Ok(mut p) = pending.lock() {
@@ -1019,34 +992,16 @@ impl MyEguiApp {
             self.log_lines.push_str(&format!("\n{}", Self::curl_command(&config.host, &config.user, &config.password, "PUT", &path, None)));
         }
         tokio::spawn(async move {
-            let base = config.host.trim_end_matches('/').to_string();
-            let url = format!("{base}{path}");
-            let http = reqwest::Client::new();
-            let req = http.put(&url).header("Content-Type", "application/json").body(body);
-            let req = if !config.user.is_empty() || !config.password.is_empty() {
-                req.basic_auth(&config.user, Some(&config.password))
-            } else {
-                req
-            };
-            let msg = match req.send().await {
-                Ok(resp) => {
-                    let status = resp.status().as_u16();
-                    match resp.text().await {
-                        Ok(body) => {
-                            if (200..300).contains(&status) {
-                                if log_results {
-                                    format!("DOC_SAVED|{body}|PUT {path} [{status}]")
-                                } else {
-                                    format!("DOC_SAVED|{body}|PUT {path} [{status}]: OK")
-                                }
-                            } else {
-                                format!("DOC_SAVE_ERR|PUT {path} [{status}]: {body}")
-                            }
-                        }
-                        Err(e) => format!("DOC_SAVE_ERR|PUT {path} failed: {e}"),
+            let msg = match cmd::save_doc(&config, &db, &doc).await {
+                Ok(v) => {
+                    let body = serde_json::to_string(&v).unwrap_or_default();
+                    if log_results {
+                        format!("DOC_SAVED|{body}|PUT {path} [201]")
+                    } else {
+                        format!("DOC_SAVED|{body}|PUT {path}: OK")
                     }
                 }
-                Err(e) => format!("DOC_SAVE_ERR|PUT {path} failed: {e}"),
+                Err(e) => format!("DOC_SAVE_ERR|{e}"),
             };
             println!("{msg}");
             if let Ok(mut p) = pending.lock() {
@@ -1065,63 +1020,20 @@ impl MyEguiApp {
         self.users_loading = true;
         self.log_lines.push_str(&format!("\n{curl}"));
         tokio::spawn(async move {
-            let base = config.host.trim_end_matches('/').to_string();
-            let url = format!("{base}{path}");
-            let http = reqwest::Client::new();
-            let req = http.get(&url);
-            let req = if !config.user.is_empty() || !config.password.is_empty() {
-                req.basic_auth(&config.user, Some(&config.password))
-            } else {
-                req
-            };
-            let msg = match req.send().await {
-                Ok(resp) => {
-                    let status = resp.status().as_u16();
-                    match resp.text().await {
-                        Ok(body) => {
-                            if (200..300).contains(&status) {
-                                match serde_json::from_str::<serde_json::Value>(&body) {
-                                    Ok(v) => {
-                                        let mut users = Vec::new();
-                                        if let Some(rows) = v.get("rows").and_then(|r| r.as_array()) {
-                                            for row in rows {
-                                                let doc = row.get("doc").cloned().unwrap_or(serde_json::Value::Null);
-                                                if doc.get("type").and_then(|t| t.as_str()) != Some("user") {
-                                                    continue;
-                                                }
-                                                let id = row.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
-                                                let name = doc.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
-                                                let rev = doc.get("_rev").and_then(|r| r.as_str()).unwrap_or("").to_string();
-                                                let roles = doc.get("roles").and_then(|r| r.as_array()).map(|a| {
-                                                    a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")
-                                                }).unwrap_or_default();
-                                                users.push(serde_json::json!({
-                                                    "id": id,
-                                                    "name": name,
-                                                    "rev": rev,
-                                                    "roles": roles,
-                                                    "doc": doc,
-                                                    "peruser_db_exists": false,
-                                                    "public_readonly": false,
-                                                }));
-                                            }
-                                        }
-                                        let envelope = serde_json::json!({
-                                            "users": users,
-                                            "log": format!("Loaded {} users [{status}]", users.len()),
-                                        });
-                                        format!("USERS|{}", serde_json::to_string(&envelope).unwrap_or_default())
-                                    }
-                                    Err(e) => format!("USERS_ERR|Failed to parse users: {e}"),
-                                }
-                            } else {
-                                format!("USERS_ERR|GET {path} [{status}]: {body}")
-                            }
-                        }
-                        Err(e) => format!("USERS_ERR|GET {path} failed: {e}"),
-                    }
+            let msg = match cmd::list_users(&config).await {
+                Ok(users) => {
+                    let count = users.len();
+                    let rows: Vec<serde_json::Value> = users
+                        .iter()
+                        .map(|u| serde_json::to_value(u).unwrap_or(serde_json::json!({})))
+                        .collect();
+                    let envelope = serde_json::json!({
+                        "users": rows,
+                        "log": format!("Loaded {count} users."),
+                    });
+                    format!("USERS|{}", serde_json::to_string(&envelope).unwrap_or_default())
                 }
-                Err(e) => format!("USERS_ERR|GET {path} failed: {e}"),
+                Err(e) => format!("USERS_ERR|{e}"),
             };
             println!("{msg}");
             if let Ok(mut p) = pending.lock() {
@@ -1141,16 +1053,12 @@ impl MyEguiApp {
             names.len()
         ));
         tokio::spawn(async move {
-            let base = config.host.trim_end_matches('/').to_string();
-            let http = reqwest::Client::new();
             let mut statuses = Vec::new();
             for name in &names {
-                let db_enc = name.replace('/', "%2F");
-                let path = format!("/{db_enc}");
-                let (status, _) = get_json(&http, &base, "", "", &path).await;
+                let public = cmd::check_public_db(&config, name).await.unwrap_or(false);
                 statuses.push(serde_json::json!({
                     "name": name,
-                    "public": status == 200,
+                    "public": public,
                 }));
             }
             let envelope = serde_json::json!({
@@ -1177,29 +1085,14 @@ impl MyEguiApp {
         self.log_lines
             .push_str(&format!("\nChecking {} per-user database(s)...", users.len()));
         tokio::spawn(async move {
-            let base = config.host.trim_end_matches('/').to_string();
-            let http = reqwest::Client::new();
             let mut statuses = Vec::new();
             for u in &users {
                 let hex: String = u.name.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
                 let db = format!("userdb-{hex}");
-                let (status, _) = get_json(&http, &base, &config.user, &config.password, &format!("/{db}")).await;
-                let peruser = status == 200;
+                let peruser = cmd::user_peruser_db_exists(&config, &u.name).await.unwrap_or(false);
                 let mut public_ro = false;
                 if peruser {
-                    let (dstatus, ddoc) = get_json(
-                        &http,
-                        &base,
-                        &config.user,
-                        &config.password,
-                        &format!("/{db}/_design/auth"),
-                    )
-                    .await;
-                    public_ro = dstatus == 200
-                        && ddoc
-                            .as_ref()
-                            .map(|v| v.get("validate_doc_update").is_some())
-                            .unwrap_or(false);
+                    public_ro = cmd::check_readonly_db(&config, &db).await.unwrap_or(false);
                 }
                 statuses.push(serde_json::json!({
                     "name": u.name,
@@ -1223,55 +1116,6 @@ impl MyEguiApp {
         });
     }
 
-    async fn setup_readonly_db(
-        host: String,
-        user: String,
-        password: String,
-        name: String,
-    ) -> Vec<String> {
-        let mut logs = Vec::new();
-        let base = host.trim_end_matches('/').to_string();
-        let hex: String = name.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
-        let db = format!("userdb-{hex}");
-        let http = reqwest::Client::new();
-
-        let js_name = name.replace('\\', "\\\\").replace('\'', "\\'");
-        let validate = format!(
-            "function(newDoc, oldDoc, userCtx) {{ if (userCtx.roles.indexOf('admin') !== -1) {{ return; }} if (userCtx.name === '{js_name}') {{ return; }} throw ({{ forbidden: 'Only the user or admins may edit the database' }}); }}"
-        );
-
-        let dpath = format!("/{db}/_design/auth");
-        let mut ddoc = serde_json::json!({
-            "_id": "_design/auth",
-            "language": "javascript",
-            "validate_doc_update": validate,
-        });
-        if let Some(rev) = fetch_rev(&http, &base, &user, &password, &dpath).await {
-            ddoc["_rev"] = serde_json::Value::String(rev);
-        }
-        let dbody = serde_json::to_string_pretty(&ddoc).unwrap_or_else(|_| ddoc.to_string());
-        logs.push(Self::curl_command(&host, &user, &password, "PUT", &dpath, Some(&dbody)));
-        let (status, body) = put_json(&http, &base, &user, &password, &dpath, &dbody).await;
-        let snippet: String = body.chars().take(200).collect();
-        logs.push(format!("  {db}/_design/auth [{status}] {snippet}"));
-
-        let spath = format!("/{db}/_security");
-        let mut sec = serde_json::json!({
-            "admins": { "names": [], "roles": [] },
-            "members": { "names": [], "roles": [] },
-        });
-        if let Some(rev) = fetch_rev(&http, &base, &user, &password, &spath).await {
-            sec["_rev"] = serde_json::Value::String(rev);
-        }
-        let sbody = serde_json::to_string(&sec).unwrap_or_else(|_| sec.to_string());
-        logs.push(Self::curl_command(&host, &user, &password, "PUT", &spath, Some(&sbody)));
-        let (status, body) = put_json(&http, &base, &user, &password, &spath, &sbody).await;
-        let snippet: String = body.chars().take(200).collect();
-        logs.push(format!("  {db}/_security [{status}] {snippet}"));
-
-        logs
-    }
-
     fn save_user(&mut self, ctx: &egui::Context) {
         let config = self.current_connection_config();
         let pending = self.pending_log.clone();
@@ -1290,7 +1134,7 @@ impl MyEguiApp {
             .map(|s| s.to_string())
             .collect();
         let editing = self.editing_user.clone();
-        let is_edit = editing.is_some();
+        let editing_doc = editing.clone().map(|e| e.doc);
         let make_readonly = self.read_only_public;
         let readonly_host = config.host.clone();
         let readonly_user = config.user.clone();
@@ -1319,49 +1163,25 @@ impl MyEguiApp {
         let curl = Self::curl_command(&config.host, &config.user, &config.password, "PUT", &path, Some(&body));
         self.log_lines.push_str(&format!("\n{curl}"));
         tokio::spawn(async move {
-            let base = config.host.trim_end_matches('/').to_string();
-            let url = format!("{base}{path}");
-            let http = reqwest::Client::new();
-            let req = http
-                .put(&url)
-                .header("Accept", "application/json")
-                .header("Content-Type", "application/json")
-                .body(body);
-            let req = if !config.user.is_empty() || !config.password.is_empty() {
-                req.basic_auth(&config.user, Some(&config.password))
-            } else {
-                req
-            };
-            let msg = match req.send().await {
-                Ok(resp) => {
-                    let status = resp.status().as_u16();
-                    match resp.text().await {
-                        Ok(body) => {
-                            if (200..300).contains(&status) {
-                                let action = if is_edit { "Updated" } else { "Created" };
-                                let mut log = format!("{action} {name} [{status}]");
-                                if make_readonly {
-                                    let extra = Self::setup_readonly_db(
-                                        readonly_host.clone(),
-                                        readonly_user.clone(),
-                                        readonly_password.clone(),
-                                        name.clone(),
-                                    )
-                                    .await;
-                                    if !extra.is_empty() {
-                                        log.push('\n');
-                                        log.push_str(&extra.join("\n"));
-                                    }
-                                }
-                                format!("USER_SAVED|{body}|{log}")
-                            } else {
-                                format!("USER_SAVE_ERR|PUT {path} [{status}]: {body}")
-                            }
+            let msg = match cmd::save_user(&config, &name, &password, roles.clone(), editing_doc.clone()).await {
+                Ok(saved) => {
+                    let mut log = saved;
+                    if make_readonly {
+                        let extra = cmd::setup_readonly_db(
+                            readonly_host.clone(),
+                            readonly_user.clone(),
+                            readonly_password.clone(),
+                            name.clone(),
+                        )
+                        .await;
+                        if !extra.is_empty() {
+                            log.push('\n');
+                            log.push_str(&extra.join("\n"));
                         }
-                        Err(e) => format!("USER_SAVE_ERR|PUT {path} failed: {e}"),
                     }
+                    format!("USER_SAVED|{log}|{log}")
                 }
-                Err(e) => format!("USER_SAVE_ERR|PUT {path} failed: {e}"),
+                Err(e) => format!("USER_SAVE_ERR|{e}"),
             };
             println!("{msg}");
             if let Ok(mut p) = pending.lock() {
@@ -1381,30 +1201,9 @@ impl MyEguiApp {
         let curl = Self::curl_command(&config.host, &config.user, &config.password, "DELETE", &path, None);
         self.log_lines.push_str(&format!("\n{curl}"));
         tokio::spawn(async move {
-            let base = config.host.trim_end_matches('/').to_string();
-            let url = format!("{base}{path}");
-            let http = reqwest::Client::new();
-            let req = http.delete(&url);
-            let req = if !config.user.is_empty() || !config.password.is_empty() {
-                req.basic_auth(&config.user, Some(&config.password))
-            } else {
-                req
-            };
-            let msg = match req.send().await {
-                Ok(resp) => {
-                    let status = resp.status().as_u16();
-                    match resp.text().await {
-                        Ok(body) => {
-                            if (200..300).contains(&status) {
-                                format!("USER_DELETED|{body}|Deleted {id} [{status}]")
-                            } else {
-                                format!("USER_DELETE_ERR|DELETE {path} [{status}]: {body}")
-                            }
-                        }
-                        Err(e) => format!("USER_DELETE_ERR|DELETE {path} failed: {e}"),
-                    }
-                }
-                Err(e) => format!("USER_DELETE_ERR|DELETE {path} failed: {e}"),
+            let msg = match cmd::delete_user(&config, &id, &rev).await {
+                Ok(log) => format!("USER_DELETED|{log}|{log}"),
+                Err(e) => format!("USER_DELETE_ERR|{e}"),
             };
             println!("{msg}");
             if let Ok(mut p) = pending.lock() {
@@ -1423,155 +1222,21 @@ impl MyEguiApp {
         self.access_test_running = true;
         self.access_test_results.clear();
         self.access_test_db = db.clone();
-        let db_enc = db.replace('/', "%2F");
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let user = config.user.clone();
-        let password = config.password.clone();
-        let host = config.host.clone();
+        let path = format!("/{}/_all_docs?limit=1", db.replace('/', "%2F"));
+        let curl = Self::curl_command(&config.host, &config.user, &config.password, "GET", &path, None);
+        self.log_lines.push_str(&format!("\n{curl}"));
         tokio::spawn(async move {
-            let base = host.trim_end_matches('/').to_string();
-            let http = reqwest::Client::new();
-            let send = |msg: String| {
-                println!("{msg}");
-                if let Ok(mut p) = pending.lock() {
-                    p.push(msg);
+            let msg = match cmd::access_test(&config, &db, Some(pending.clone()), Some(ctx2.clone())).await {
+                Ok(results) => {
+                    format!("ACCESS_TEST_DONE|{}", serde_json::to_string(&results).unwrap_or("[]".to_string()))
                 }
-                ctx2.request_repaint();
+                Err(e) => format!("ACCESS_TEST_ERR|{e}"),
             };
-            let row = |name: &str, ok: bool, detail: String| {
-                let row = serde_json::json!({ "name": name, "ok": ok, "detail": detail });
-                format!("ACCESS_TEST_ROW|{row}")
-            };
-
-            let path1 = format!("/{db_enc}/_all_docs?limit=1");
-            send(Self::curl_command(&host, &user, &password, "GET", &path1, None));
-            let resp = http
-                .get(format!("{base}{path1}"))
-                .basic_auth(&user, Some(&password))
-                .send()
-                .await;
-            let (status, body) = match resp {
-                Ok(r) => {
-                    let s = r.status().as_u16();
-                    let b = r.text().await.unwrap_or_default();
-                    (s, b)
-                }
-                Err(e) => (0, e.to_string()),
-            };
-            let total = serde_json::from_str::<serde_json::Value>(&body)
-                .ok()
-                .and_then(|v| v.get("total_rows").and_then(|t| t.as_u64()));
-            let detail = match total {
-                Some(t) => format!("[{status}] total_rows={t}"),
-                None => format!("[{status}] {}", body.chars().take(120).collect::<String>()),
-            };
-            send(row("Read with credentials", status == 200, detail));
-
-            let path2 = path1.clone();
-            send(Self::curl_command(&host, "", "", "GET", &path2, None));
-            let resp = http.get(format!("{base}{path2}")).send().await;
-            let (status, body) = match resp {
-                Ok(r) => {
-                    let s = r.status().as_u16();
-                    let b = r.text().await.unwrap_or_default();
-                    (s, b)
-                }
-                Err(e) => (0, e.to_string()),
-            };
-            let total = serde_json::from_str::<serde_json::Value>(&body)
-                .ok()
-                .and_then(|v| v.get("total_rows").and_then(|t| t.as_u64()));
-            let detail = match total {
-                Some(t) => format!("[{status}] total_rows={t}"),
-                None => format!("[{status}] {}", body.chars().take(120).collect::<String>()),
-            };
-            send(row("Read anonymous", status == 200, detail));
-
-            let test_id = format!("couchy_access_test_{ts}");
-            let path3 = format!("/{db_enc}/{test_id}");
-            let doc3 = serde_json::json!({
-                "_id": test_id,
-                "type": "couchy_access_test",
-                "created_at": ts,
-            });
-            let body3 = serde_json::to_string(&doc3).unwrap_or_else(|_| doc3.to_string());
-            send(Self::curl_command(&host, &user, &password, "PUT", &path3, Some(&body3)));
-            let resp = http
-                .put(format!("{base}{path3}"))
-                .header("Content-Type", "application/json")
-                .basic_auth(&user, Some(&password))
-                .body(body3)
-                .send()
-                .await;
-            let (status, body) = match resp {
-                Ok(r) => {
-                    let s = r.status().as_u16();
-                    let b = r.text().await.unwrap_or_default();
-                    (s, b)
-                }
-                Err(e) => (0, e.to_string()),
-            };
-            let created = (200..=202).contains(&status);
-            if created {
-                let rev = serde_json::from_str::<serde_json::Value>(&body)
-                    .ok()
-                    .and_then(|v| v.get("rev").and_then(|r| r.as_str()).map(|s| s.to_string()));
-                if let Some(rev) = rev {
-                    let dpath = format!("/{db_enc}/{test_id}?rev={rev}");
-                    let _ = http
-                        .delete(format!("{base}{dpath}"))
-                        .basic_auth(&user, Some(&password))
-                        .send()
-                        .await;
-                }
+            println!("{msg}");
+            if let Ok(mut p) = pending.lock() {
+                p.push(msg);
             }
-            let detail = format!("[{status}] {}", body.chars().take(120).collect::<String>());
-            send(row("Write with credentials", created, detail));
-
-            let test_id2 = format!("couchy_access_test_anon_{ts}");
-            let path4 = format!("/{db_enc}/{test_id2}");
-            let doc4 = serde_json::json!({
-                "_id": test_id2,
-                "type": "couchy_access_test",
-                "created_at": ts,
-            });
-            let body4 = serde_json::to_string(&doc4).unwrap_or_else(|_| doc4.to_string());
-            send(Self::curl_command(&host, "", "", "PUT", &path4, Some(&body4)));
-            let resp = http
-                .put(format!("{base}{path4}"))
-                .header("Content-Type", "application/json")
-                .body(body4)
-                .send()
-                .await;
-            let (status, body) = match resp {
-                Ok(r) => {
-                    let s = r.status().as_u16();
-                    let b = r.text().await.unwrap_or_default();
-                    (s, b)
-                }
-                Err(e) => (0, e.to_string()),
-            };
-            let created = (200..=202).contains(&status);
-            if created {
-                let rev = serde_json::from_str::<serde_json::Value>(&body)
-                    .ok()
-                    .and_then(|v| v.get("rev").and_then(|r| r.as_str()).map(|s| s.to_string()));
-                if let Some(rev) = rev {
-                    let dpath = format!("/{db_enc}/{test_id2}?rev={rev}");
-                    let _ = http
-                        .delete(format!("{base}{dpath}"))
-                        .basic_auth(&user, Some(&password))
-                        .send()
-                        .await;
-                }
-            }
-            let detail = format!("[{status}] {}", body.chars().take(120).collect::<String>());
-            send(row("Write anonymous", created, detail));
-
-            send("ACCESS_TEST_DONE".to_string());
+            ctx2.request_repaint();
         });
     }
 
@@ -1583,115 +1248,15 @@ impl MyEguiApp {
         self.delete_all_running = true;
         self.log_lines.push_str(&format!("\nDelete all Docs: starting in {db} ..."));
         tokio::spawn(async move {
-            let base = config.host.trim_end_matches('/').to_string();
-            let db_enc = db.replace('/', "%2F");
-            let http = reqwest::Client::new();
-            let send = |msg: String| {
-                println!("{msg}");
-                if let Ok(mut p) = pending.lock() {
-                    p.push(msg);
-                }
-                ctx2.request_repaint();
+            let msg = match cmd::delete_all_docs(&config, &db, Some(pending.clone()), Some(ctx2.clone())).await {
+                Ok(_) => format!("DEL_ALL_DONE|{db}|Delete all Docs finished."),
+                Err(e) => format!("DEL_ALL_ERR|{e}"),
             };
-
-            let path = format!("/{db_enc}/_all_docs");
-            send(Self::curl_command(&config.host, &config.user, &config.password, "GET", &path, None));
-            let req = http.get(format!("{base}{path}"));
-            let req = if !config.user.is_empty() || !config.password.is_empty() {
-                req.basic_auth(&config.user, Some(&config.password))
-            } else {
-                req
-            };
-            let (status, body) = match req.send().await {
-                Ok(resp) => {
-                    let s = resp.status().as_u16();
-                    let b = resp.text().await.unwrap_or_default();
-                    (s, b)
-                }
-                Err(e) => {
-                    send(format!("DEL_ALL_ERR|Failed to list documents: {e}"));
-                    return;
-                }
-            };
-            if !(200..300).contains(&status) {
-                let snippet: String = body.chars().take(200).collect();
-                send(format!("DEL_ALL_ERR|GET {path} failed [{status}]: {snippet}"));
-                return;
+            println!("{msg}");
+            if let Ok(mut p) = pending.lock() {
+                p.push(msg);
             }
-            let parsed: serde_json::Value = match serde_json::from_str(&body) {
-                Ok(v) => v,
-                Err(e) => {
-                    send(format!("DEL_ALL_ERR|Failed to parse _all_docs response: {e}"));
-                    return;
-                }
-            };
-            let rows: Vec<(String, String)> = parsed
-                .get("rows")
-                .and_then(|r| r.as_array())
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|row| {
-                    let id = row.get("id").and_then(|i| i.as_str())?.to_string();
-                    let rev = row
-                        .get("value")
-                        .and_then(|v| v.get("rev"))
-                        .and_then(|r| r.as_str())?
-                        .to_string();
-                    Some((id, rev))
-                })
-                .collect();
-            let internal_count = rows.iter().filter(|(id, _)| id.starts_with('_')).count();
-            let rows: Vec<(String, String)> = rows.into_iter().filter(|(id, _)| !id.starts_with('_')).collect();
-            let total = rows.len();
-            if total == 0 {
-                send(format!(
-                    "DEL_ALL_DONE|{db}|Delete all Docs: no documents to delete ({internal_count} documents starting with '_' were kept)."
-                ));
-                return;
-            }
-            if internal_count > 0 {
-                send(format!("Skipping {internal_count} document(s) starting with '_' (design documents)."));
-            }
-            send(format!("Found {total} documents in {db}. Deleting..."));
-
-            let bulk_path = format!("/{db_enc}/_bulk_docs");
-            let url = format!("{base}{bulk_path}");
-            let mut deleted = 0usize;
-            for chunk in rows.chunks(100) {
-                let docs: Vec<serde_json::Value> = chunk
-                    .iter()
-                    .map(|(id, rev)| serde_json::json!({ "_id": id, "_rev": rev, "_deleted": true }))
-                    .collect();
-                let payload = serde_json::json!({ "docs": docs });
-                send(format!("curl -X POST '{url}' -H 'Content-Type: application/json'  (batch of {})", chunk.len()));
-                let req = http
-                    .post(&url)
-                    .header("Content-Type", "application/json")
-                    .basic_auth(&config.user, Some(&config.password))
-                    .json(&payload);
-                match req.send().await {
-                    Ok(resp) => {
-                        let status = resp.status().as_u16();
-                        let body = resp.text().await.unwrap_or_default();
-                        if (200..300).contains(&status) {
-                            deleted += chunk.len();
-                            send(format!("Deleted {deleted}/{total} documents..."));
-                        } else {
-                            let snippet: String = body.chars().take(200).collect();
-                            send(format!("DEL_ALL_ERR|_bulk_docs failed [{status}]: {snippet}"));
-                            return;
-                        }
-                    }
-                    Err(e) => {
-                        send(format!("DEL_ALL_ERR|_bulk_docs request failed: {e}"));
-                        return;
-                    }
-                }
-            }
-            send(format!(
-                "DEL_ALL_DONE|{db}|Delete all Docs finished: {deleted} documents deleted from {db}."
-            ));
+            ctx2.request_repaint();
         });
     }
 
@@ -1702,52 +1267,15 @@ impl MyEguiApp {
         self.purge_all_running = true;
         self.log_lines.push_str("\nPurge deleted Docs (all databases) starting...");
         tokio::spawn(async move {
-            let send = |msg: String| {
-                println!("{msg}");
-                if let Ok(mut p) = pending.lock() {
-                    p.push(msg);
-                }
-                ctx2.request_repaint();
+            let msg = match cmd::purge_server_deleted_docs(&config, Some(pending.clone()), Some(ctx2.clone())).await {
+                Ok(_) => "DEL_PURGE_ALL_DONE|Purge deleted Docs finished.".to_string(),
+                Err(e) => format!("DEL_PURGE_ALL_ERR|{e}"),
             };
-            let client = match couch_rs::Client::new(&config.host, &config.user, &config.password) {
-                Ok(c) => c,
-                Err(e) => {
-                    send(format!("DEL_PURGE_ALL_ERR|Failed to connect: {e}"));
-                    return;
-                }
-            };
-            let dbs = match client.list_dbs().await {
-                Ok(d) => d,
-                Err(e) => {
-                    send(format!("DEL_PURGE_ALL_ERR|Failed to list databases: {e}"));
-                    return;
-                }
-            };
-            let total = dbs.len();
-            send(format!("Found {total} databases."));
-            let base = config.host.trim_end_matches('/').to_string();
-            let http = reqwest::Client::new();
-            let user = config.user.clone();
-            let password = config.password.clone();
-            let host = config.host.clone();
-            let mut failures = 0usize;
-            for (idx, dbname) in dbs.into_iter().enumerate() {
-                let i = idx + 1;
-                let db_enc = dbname.replace('/', "%2F");
-                send(Self::curl_command(&host, &user, &password, "GET", &format!("/{db_enc}/_changes"), None));
-                match purge_db_deleted_docs(&http, &base, &user, &password, &dbname, send.clone()).await {
-                    Ok(line) => {
-                        send(format!("[{i}/{total}] {line}"));
-                    }
-                    Err(e) => {
-                        failures += 1;
-                        send(format!("[{i}/{total}] {dbname}: {e}"));
-                    }
-                }
+            println!("{msg}");
+            if let Ok(mut p) = pending.lock() {
+                p.push(msg);
             }
-            send(format!(
-                "DEL_PURGE_ALL_DONE|Purge deleted Docs finished: {total} databases processed, {failures} failure(s)."
-            ));
+            ctx2.request_repaint();
         });
     }
 
@@ -1760,23 +1288,16 @@ impl MyEguiApp {
         let path = format!("/{db_enc}/_changes");
         let curl = Self::curl_command(&config.host, &config.user, &config.password, "GET", &path, None);
         self.log_lines.push_str(&format!("\n{curl}"));
-        let user = config.user.clone();
-        let password = config.password.clone();
-        let host = config.host.clone();
         tokio::spawn(async move {
-            let send = |msg: String| {
-                println!("{msg}");
-                if let Ok(mut p) = pending.lock() {
-                    p.push(msg);
-                }
-                ctx2.request_repaint();
+            let msg = match cmd::purge_db_deleted_docs(&config, &db, Some(pending.clone()), Some(ctx2.clone())).await {
+                Ok(line) => format!("DEL_PURGE_OK|{line}"),
+                Err(e) => format!("DEL_PURGE_ERR|{db}: {e}"),
             };
-            let base = host.trim_end_matches('/').to_string();
-            let http = reqwest::Client::new();
-            match purge_db_deleted_docs(&http, &base, &user, &password, &db, send.clone()).await {
-                Ok(line) => send(format!("DEL_PURGE_OK|{line}")),
-                Err(e) => send(format!("DEL_PURGE_ERR|{db}: {e}")),
+            println!("{msg}");
+            if let Ok(mut p) = pending.lock() {
+                p.push(msg);
             }
+            ctx2.request_repaint();
         });
     }
 
@@ -1791,51 +1312,26 @@ impl MyEguiApp {
             .unwrap_or(serde_json::json!({}));
         let body = serde_json::to_string(&doc).unwrap_or_else(|_| doc.to_string());
         let id = id.trim().to_string();
-        let base = config.host.trim_end_matches('/').to_string();
         let db_enc = db.replace('/', "%2F");
-        let (method, path) = if id.is_empty() {
+        let (method, path) = if id.trim().is_empty() {
             ("POST", format!("/{db_enc}"))
         } else {
             ("PUT", format!("/{db_enc}/{}", id.replace('/', "%2F")))
         };
+        let id_for_call = id.trim().to_string();
         let curl = Self::curl_command(&config.host, &config.user, &config.password, method, &path, Some(&body));
         self.log_lines.push_str(&format!("\n{curl}"));
         tokio::spawn(async move {
-            let http = reqwest::Client::new();
-            let url = format!("{base}{path}");
-            let req = if method == "POST" {
-                http.post(&url)
-            } else {
-                http.put(&url)
-            };
-            let req = req
-                .header("Content-Type", "application/json")
-                .header("Accept", "application/json")
-                .basic_auth(&config.user, Some(&config.password))
-                .body(body);
-            let msg = match req.send().await {
-                Ok(resp) => {
-                    let status = resp.status().as_u16();
-                    match resp.text().await {
-                        Ok(body) => {
-                            let snippet: String = body.chars().take(200).collect();
-                            if (200..300).contains(&status) {
-                                let created_id = serde_json::from_str::<serde_json::Value>(&body)
-                                    .ok()
-                                    .and_then(|v| v.get("id").and_then(|i| i.as_str()).map(|s| s.to_string()))
-                                    .or_else(|| Some(id.clone()))
-                                    .unwrap_or_default();
-                                format!("DOC_CREATED|{db}|Created document {created_id} [{status}]")
-                            } else if status == 409 {
-                                format!("DOC_CREATE_ERR|Document already exists [{status}]")
-                            } else {
-                                format!("DOC_CREATE_ERR|Create failed [{status}]: {snippet}")
-                            }
-                        }
-                        Err(e) => format!("DOC_CREATE_ERR|Create failed: {e}"),
-                    }
+            let msg = match cmd::create_doc(&config, &db, &id_for_call, &doc).await {
+                Ok(v) => {
+                    let created_id = v
+                        .get("id")
+                        .and_then(|i| i.as_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| id_for_call.clone());
+                    format!("DOC_CREATED|{db}|Created document {created_id}")
                 }
-                Err(e) => format!("DOC_CREATE_ERR|Create failed: {e}"),
+                Err(e) => format!("DOC_CREATE_ERR|{e}"),
             };
             println!("{msg}");
             if let Ok(mut p) = pending.lock() {
@@ -1924,47 +1420,34 @@ impl MyEguiApp {
         self.new_doc_id_input.clear();
         self.db_infos.clear();
         self.db_list.clear();
+        let test_path_s = {
+            let db = self.database.trim();
+            if db.is_empty() {
+                "/_all_dbs".to_string()
+            } else {
+                format!("/{}", db.replace('/', "%2F"))
+            }
+        };
         self.log_lines.push_str(&format!(
             "\n{}",
-            Self::curl_command(&host, &user, &password, "GET", &test_path(&self.database), None)
+            Self::curl_command(&host, &user, &password, "GET", &test_path_s, None)
         ));
         let pending = self.pending_log.clone();
         let ctx = ctx.clone();
         let host_for_state = host.clone();
         let db_test = self.database.trim().to_string();
         tokio::spawn(async move {
-            let msg = if !db_test.is_empty() {
-                let base = host.trim_end_matches('/').to_string();
-                let db_enc = db_test.replace('/', "%2F");
-                let url = format!("{base}/{db_enc}");
-                let http = reqwest::Client::new();
-                let req = http.get(&url);
-                let req = if !user.is_empty() || !password.is_empty() {
-                    req.basic_auth(&user, Some(&password))
-                } else {
-                    req
+            let msg = {
+                let cfg = AppConfig {
+                    host: host.clone(),
+                    user: user.clone(),
+                    password: password.clone(),
+                    database: db_test.clone(),
+                    ..AppConfig::default()
                 };
-                let (status, body) = match req.send().await {
-                    Ok(resp) => {
-                        let s = resp.status().as_u16();
-                        let b = resp.text().await.unwrap_or_default();
-                        (s, b)
-                    }
-                    Err(e) => (0, e.to_string()),
-                };
-                if (200..300).contains(&status) {
-                    format!("CONNECTED_OK|{host_for_state}|Connected to {host} (database {db_test})")
-                } else {
-                    let snippet: String = body.chars().take(160).collect();
-                    format!("CONNECTED_ERR|Connection failed: {host}: database {db_test} [{status}] {snippet}")
-                }
-            } else {
-                match couch_rs::Client::new(&host, &user, &password) {
-                    Ok(client) => match client.list_dbs().await {
-                        Ok(dbs) => format!("CONNECTED_OK|{host_for_state}|Connected to {host} ({} databases)", dbs.len()),
-                        Err(e) => format!("CONNECTED_ERR|Connection failed: {host}: {e}"),
-                    },
-                    Err(e) => format!("CONNECTED_ERR|Connection failed: {host}: {e}"),
+                match cmd::connect(&cfg).await {
+                    Ok(m) => format!("CONNECTED_OK|{host_for_state}|{m}"),
+                    Err(e) => format!("CONNECTED_ERR|{e}"),
                 }
             };
             println!("{msg}");
@@ -2042,7 +1525,7 @@ impl eframe::App for MyEguiApp {
                     } else if let Some(rest) = msg.strip_prefix("DB_INFO|") {
                         if let Ok(env) = serde_json::from_str::<serde_json::Value>(rest) {
                             if let Some(data) = env.get("data") {
-                                self.db_infos = Self::parse_db_infos(data);
+                                self.db_infos = cmd::parse_db_infos(data);
                                 check_public = !self.db_infos.is_empty();
                             }
                             if let Some(log) = env.get("log").and_then(|v| v.as_str()) {
@@ -2221,27 +1704,6 @@ impl eframe::App for MyEguiApp {
                             self.log_lines.push('\n');
                             self.log_lines.push_str(rest);
                         }
-                    } else if let Some(rest) = msg.strip_prefix("ACCESS_TEST_ROW|") {
-                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(rest) {
-                            self.access_test_results.push(AccessTestRow {
-                                name: v.get("name").and_then(|x| x.as_str()).unwrap_or("?").to_string(),
-                                ok: v.get("ok").and_then(|x| x.as_bool()).unwrap_or(false),
-                                detail: v.get("detail").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-                            });
-                        } else {
-                            self.log_lines.push('\n');
-                            self.log_lines.push_str(rest);
-                        }
-                    } else if let Some(rest) = msg.strip_prefix("PROBE_OK|") {
-                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(rest) {
-                            probe_ok = Some(v);
-                        } else {
-                            self.log_lines.push('\n');
-                            self.log_lines.push_str(rest);
-                        }
-                    } else if let Some(m) = msg.strip_prefix("PROBE_ERR|") {
-                        self.log_lines.push('\n');
-                        self.log_lines.push_str(m);
                     } else if msg.strip_prefix("ACCESS_TEST_DONE").is_some() {
                         self.access_test_running = false;
                         self.log_lines.push_str("\nAccess test finished.");
