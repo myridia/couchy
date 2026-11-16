@@ -75,6 +75,12 @@ struct DbInfoRow {
     public: Option<bool>,
 }
 
+struct AccessTestRow {
+    name: String,
+    ok: bool,
+    detail: String,
+}
+
 struct DocRow {
     id: String,
     rev: String,
@@ -91,6 +97,15 @@ struct UserRow {
     peruser_db_exists: bool,
     #[serde(default)]
     public_readonly: bool,
+}
+
+fn test_path(database: &str) -> String {
+    let db = database.trim();
+    if db.is_empty() {
+        "/_all_dbs".to_string()
+    } else {
+        format!("/{}", db.replace('/', "%2F"))
+    }
 }
 
 async fn fetch_rev(
@@ -167,6 +182,78 @@ async fn put_json(
         }
         Err(e) => (0, e.to_string()),
     }
+}
+
+async fn purge_db_deleted_docs<F: Fn(String)>(
+    http: &reqwest::Client,
+    base: &str,
+    user: &str,
+    password: &str,
+    dbname: &str,
+    send: F,
+) -> Result<String, String> {
+    let db_enc = dbname.replace('/', "%2F");
+    let (status, parsed) = get_json(http, base, user, password, &format!("/{db_enc}/_changes")).await;
+    if status != 200 {
+        return Err(format!("[{status}] GET _changes failed"));
+    }
+    let parsed = parsed.ok_or_else(|| "GET _changes failed: unexpected response".to_string())?;
+
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    if let Some(results) = parsed.get("results").and_then(|r| r.as_array()) {
+        for row in results {
+            let deleted = row.get("deleted").and_then(|d| d.as_bool()).unwrap_or(false);
+            if !deleted {
+                continue;
+            }
+            let id = row.get("id").and_then(|i| i.as_str()).unwrap_or("");
+            let rev = row
+                .get("changes")
+                .and_then(|c| c.as_array())
+                .and_then(|a| a.first())
+                .and_then(|c| c.get("rev").and_then(|r| r.as_str()))
+                .unwrap_or("");
+            if !id.is_empty() && !rev.is_empty() {
+                pairs.push((id.to_string(), rev.to_string()));
+            }
+        }
+    }
+    let total = pairs.len();
+    if total == 0 {
+        return Ok(format!("{dbname}: 0 deleted documents to purge"));
+    }
+    let mut purged = 0usize;
+    for chunk in pairs.chunks(99) {
+        let mut map = serde_json::Map::new();
+        for (id, rev) in chunk {
+            map.insert(id.clone(), serde_json::json!([rev]));
+        }
+        let body = serde_json::Value::Object(map).to_string();
+        let purge_path = format!("/{db_enc}/_purge");
+        let resp = http
+            .post(format!("{base}{purge_path}"))
+            .header("Content-Type", "application/json")
+            .basic_auth(user, Some(password))
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| format!("POST {purge_path} failed: {e}"))?;
+        let status = resp.status().as_u16();
+        let body = resp.text().await.unwrap_or_default();
+        if status != 200 && status != 201 && status != 202 {
+            let snippet: String = body.chars().take(200).collect();
+            return Err(format!("[{status}] POST {purge_path} failed: {snippet}"));
+        }
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap_or(serde_json::json!({}));
+        let n = v
+            .get("purged")
+            .and_then(|p| p.as_object())
+            .map(|o| o.len())
+            .unwrap_or(chunk.len());
+        purged += n;
+        send(format!("  purged {purged}/{total} deleted documents..."));
+    }
+    Ok(format!("{dbname}: purged {purged} deleted documents"))
 }
 
 fn json_editor(ui: &mut egui::Ui, value: &mut serde_json::Value, new_key_input: &mut String) {
@@ -316,6 +403,9 @@ struct MyEguiApp {
     doc_json: Option<serde_json::Value>,
     doc_loading: bool,
     new_key_input: String,
+    new_doc_mode: bool,
+    new_doc_id_input: String,
+    new_doc_json: Option<serde_json::Value>,
     users: Vec<UserRow>,
     users_view: bool,
     users_loading: bool,
@@ -326,6 +416,14 @@ struct MyEguiApp {
     user_roles_input: String,
     confirm_delete: Option<String>,
     read_only_public: bool,
+    delete_all_open: bool,
+    delete_all_running: bool,
+    purge_all_open: bool,
+    purge_all_running: bool,
+    access_test_open: bool,
+    access_test_running: bool,
+    access_test_db: String,
+    access_test_results: Vec<AccessTestRow>,
 }
 
 impl Default for MyEguiApp {
@@ -359,6 +457,9 @@ impl Default for MyEguiApp {
             doc_json: None,
             doc_loading: false,
             new_key_input: String::new(),
+            new_doc_mode: false,
+            new_doc_id_input: String::new(),
+            new_doc_json: None,
             users: Vec::new(),
             users_view: false,
             users_loading: false,
@@ -369,6 +470,14 @@ impl Default for MyEguiApp {
             user_roles_input: String::new(),
             confirm_delete: None,
             read_only_public: false,
+            delete_all_open: false,
+            delete_all_running: false,
+            purge_all_open: false,
+            purge_all_running: false,
+            access_test_open: false,
+            access_test_running: false,
+            access_test_db: String::new(),
+            access_test_results: Vec::new(),
         };
         if !app.servers.is_empty() {
             app.select_server(0);
@@ -425,6 +534,15 @@ impl MyEguiApp {
         cmd
     }
 
+    fn bare_host(s: &str) -> String {
+        s.trim()
+            .strip_prefix("https://")
+            .or_else(|| s.trim().strip_prefix("http://"))
+            .unwrap_or(s.trim())
+            .trim_end_matches('/')
+            .to_string()
+    }
+
     fn current_connection_config(&self) -> AppConfig {
         ServerConfig {
             name: self.server_name.clone(),
@@ -460,21 +578,28 @@ impl MyEguiApp {
         }
     }
 
-    fn add_or_update_server(&mut self) {
+    fn save_server_entry(
+        &mut self,
+        name: String,
+        host: String,
+        user: String,
+        password: String,
+        database: String,
+    ) {
         let server = ServerConfig {
-            name: if self.server_name.trim().is_empty() {
-                if self.host.trim().is_empty() {
+            name: if name.trim().is_empty() {
+                if host.trim().is_empty() {
                     format!("Server {}", self.servers.len() + 1)
                 } else {
-                    self.host.clone()
+                    Self::bare_host(&host)
                 }
             } else {
-                self.server_name.clone()
+                name
             },
-            host: self.host.clone(),
-            user: self.user.clone(),
-            password: self.password.clone(),
-            database: self.database.clone(),
+            host,
+            user,
+            password,
+            database,
         };
         if let Some(idx) = self.selected_server {
             if idx < self.servers.len() {
@@ -489,6 +614,68 @@ impl MyEguiApp {
         }
         self.persist_servers();
         self.log_lines.push_str("\nServer list saved.");
+    }
+
+    fn add_or_update_server(&mut self, ctx: &egui::Context) {
+        let host = self.host.trim().to_string();
+        let name = self.server_name.trim().to_string();
+        let user = self.user.clone();
+        let password = self.password.clone();
+        let database = self.database.clone();
+        if host.is_empty() || host.starts_with("http://") || host.starts_with("https://") {
+            self.save_server_entry(name, host, user, password, database);
+            return;
+        }
+        let pending = self.pending_log.clone();
+        let ctx2 = ctx.clone();
+        let https_curl = Self::curl_command(&format!("https://{host}"), "", "", "GET", "/", None);
+        let http_curl = Self::curl_command(&format!("http://{host}"), "", "", "GET", "/", None);
+        self.log_lines.push_str(&format!("\nTesting {host} ..."));
+        tokio::spawn(async move {
+            let http = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(5))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new());
+            let send = |msg: String| {
+                println!("{msg}");
+                if let Ok(mut p) = pending.lock() {
+                    p.push(msg);
+                }
+                ctx2.request_repaint();
+            };
+            send(https_curl);
+            let https_ok = match http.get(format!("https://{host}/")).send().await {
+                Ok(resp) => resp.status().as_u16() < 500,
+                Err(_) => false,
+            };
+            let mut scheme = if https_ok { Some("https") } else { None };
+            if scheme.is_none() {
+                send(http_curl);
+                let http_ok = match http.get(format!("http://{host}/")).send().await {
+                    Ok(resp) => resp.status().as_u16() < 500,
+                    Err(_) => false,
+                };
+                if http_ok {
+                    scheme = Some("http");
+                }
+            }
+            match scheme {
+                Some(s) => {
+                    let payload = serde_json::json!({
+                        "scheme": s,
+                        "host": host,
+                        "name": name,
+                        "user": user,
+                        "password": password,
+                        "database": database,
+                    });
+                    send(format!("PROBE_OK|{payload}"));
+                }
+                None => {
+                    send(format!("PROBE_ERR|Cannot reach {host} with https or http - server entry not saved."));
+                }
+            }
+        });
     }
 
     fn delete_selected_server(&mut self) {
@@ -1227,45 +1414,428 @@ impl MyEguiApp {
         });
     }
 
-    fn check_public_access(&mut self, ctx: &egui::Context, db: &str) {
+    fn start_access_test(&mut self, ctx: &egui::Context, db: &str) {
+        let config = self.current_connection_config();
+        let pending = self.pending_log.clone();
+        let ctx2 = ctx.clone();
+        let db = db.to_string();
+        self.access_test_open = true;
+        self.access_test_running = true;
+        self.access_test_results.clear();
+        self.access_test_db = db.clone();
+        let db_enc = db.replace('/', "%2F");
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let user = config.user.clone();
+        let password = config.password.clone();
+        let host = config.host.clone();
+        tokio::spawn(async move {
+            let base = host.trim_end_matches('/').to_string();
+            let http = reqwest::Client::new();
+            let send = |msg: String| {
+                println!("{msg}");
+                if let Ok(mut p) = pending.lock() {
+                    p.push(msg);
+                }
+                ctx2.request_repaint();
+            };
+            let row = |name: &str, ok: bool, detail: String| {
+                let row = serde_json::json!({ "name": name, "ok": ok, "detail": detail });
+                format!("ACCESS_TEST_ROW|{row}")
+            };
+
+            let path1 = format!("/{db_enc}/_all_docs?limit=1");
+            send(Self::curl_command(&host, &user, &password, "GET", &path1, None));
+            let resp = http
+                .get(format!("{base}{path1}"))
+                .basic_auth(&user, Some(&password))
+                .send()
+                .await;
+            let (status, body) = match resp {
+                Ok(r) => {
+                    let s = r.status().as_u16();
+                    let b = r.text().await.unwrap_or_default();
+                    (s, b)
+                }
+                Err(e) => (0, e.to_string()),
+            };
+            let total = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v.get("total_rows").and_then(|t| t.as_u64()));
+            let detail = match total {
+                Some(t) => format!("[{status}] total_rows={t}"),
+                None => format!("[{status}] {}", body.chars().take(120).collect::<String>()),
+            };
+            send(row("Read with credentials", status == 200, detail));
+
+            let path2 = path1.clone();
+            send(Self::curl_command(&host, "", "", "GET", &path2, None));
+            let resp = http.get(format!("{base}{path2}")).send().await;
+            let (status, body) = match resp {
+                Ok(r) => {
+                    let s = r.status().as_u16();
+                    let b = r.text().await.unwrap_or_default();
+                    (s, b)
+                }
+                Err(e) => (0, e.to_string()),
+            };
+            let total = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v.get("total_rows").and_then(|t| t.as_u64()));
+            let detail = match total {
+                Some(t) => format!("[{status}] total_rows={t}"),
+                None => format!("[{status}] {}", body.chars().take(120).collect::<String>()),
+            };
+            send(row("Read anonymous", status == 200, detail));
+
+            let test_id = format!("couchy_access_test_{ts}");
+            let path3 = format!("/{db_enc}/{test_id}");
+            let doc3 = serde_json::json!({
+                "_id": test_id,
+                "type": "couchy_access_test",
+                "created_at": ts,
+            });
+            let body3 = serde_json::to_string(&doc3).unwrap_or_else(|_| doc3.to_string());
+            send(Self::curl_command(&host, &user, &password, "PUT", &path3, Some(&body3)));
+            let resp = http
+                .put(format!("{base}{path3}"))
+                .header("Content-Type", "application/json")
+                .basic_auth(&user, Some(&password))
+                .body(body3)
+                .send()
+                .await;
+            let (status, body) = match resp {
+                Ok(r) => {
+                    let s = r.status().as_u16();
+                    let b = r.text().await.unwrap_or_default();
+                    (s, b)
+                }
+                Err(e) => (0, e.to_string()),
+            };
+            let created = (200..=202).contains(&status);
+            if created {
+                let rev = serde_json::from_str::<serde_json::Value>(&body)
+                    .ok()
+                    .and_then(|v| v.get("rev").and_then(|r| r.as_str()).map(|s| s.to_string()));
+                if let Some(rev) = rev {
+                    let dpath = format!("/{db_enc}/{test_id}?rev={rev}");
+                    let _ = http
+                        .delete(format!("{base}{dpath}"))
+                        .basic_auth(&user, Some(&password))
+                        .send()
+                        .await;
+                }
+            }
+            let detail = format!("[{status}] {}", body.chars().take(120).collect::<String>());
+            send(row("Write with credentials", created, detail));
+
+            let test_id2 = format!("couchy_access_test_anon_{ts}");
+            let path4 = format!("/{db_enc}/{test_id2}");
+            let doc4 = serde_json::json!({
+                "_id": test_id2,
+                "type": "couchy_access_test",
+                "created_at": ts,
+            });
+            let body4 = serde_json::to_string(&doc4).unwrap_or_else(|_| doc4.to_string());
+            send(Self::curl_command(&host, "", "", "PUT", &path4, Some(&body4)));
+            let resp = http
+                .put(format!("{base}{path4}"))
+                .header("Content-Type", "application/json")
+                .body(body4)
+                .send()
+                .await;
+            let (status, body) = match resp {
+                Ok(r) => {
+                    let s = r.status().as_u16();
+                    let b = r.text().await.unwrap_or_default();
+                    (s, b)
+                }
+                Err(e) => (0, e.to_string()),
+            };
+            let created = (200..=202).contains(&status);
+            if created {
+                let rev = serde_json::from_str::<serde_json::Value>(&body)
+                    .ok()
+                    .and_then(|v| v.get("rev").and_then(|r| r.as_str()).map(|s| s.to_string()));
+                if let Some(rev) = rev {
+                    let dpath = format!("/{db_enc}/{test_id2}?rev={rev}");
+                    let _ = http
+                        .delete(format!("{base}{dpath}"))
+                        .basic_auth(&user, Some(&password))
+                        .send()
+                        .await;
+                }
+            }
+            let detail = format!("[{status}] {}", body.chars().take(120).collect::<String>());
+            send(row("Write anonymous", created, detail));
+
+            send("ACCESS_TEST_DONE".to_string());
+        });
+    }
+
+    fn delete_all_docs(&mut self, ctx: &egui::Context, db: &str) {
+        let config = self.current_connection_config();
+        let pending = self.pending_log.clone();
+        let ctx2 = ctx.clone();
+        let db = db.to_string();
+        self.delete_all_running = true;
+        self.log_lines.push_str(&format!("\nDelete all Docs: starting in {db} ..."));
+        tokio::spawn(async move {
+            let base = config.host.trim_end_matches('/').to_string();
+            let db_enc = db.replace('/', "%2F");
+            let http = reqwest::Client::new();
+            let send = |msg: String| {
+                println!("{msg}");
+                if let Ok(mut p) = pending.lock() {
+                    p.push(msg);
+                }
+                ctx2.request_repaint();
+            };
+
+            let path = format!("/{db_enc}/_all_docs");
+            send(Self::curl_command(&config.host, &config.user, &config.password, "GET", &path, None));
+            let req = http.get(format!("{base}{path}"));
+            let req = if !config.user.is_empty() || !config.password.is_empty() {
+                req.basic_auth(&config.user, Some(&config.password))
+            } else {
+                req
+            };
+            let (status, body) = match req.send().await {
+                Ok(resp) => {
+                    let s = resp.status().as_u16();
+                    let b = resp.text().await.unwrap_or_default();
+                    (s, b)
+                }
+                Err(e) => {
+                    send(format!("DEL_ALL_ERR|Failed to list documents: {e}"));
+                    return;
+                }
+            };
+            if !(200..300).contains(&status) {
+                let snippet: String = body.chars().take(200).collect();
+                send(format!("DEL_ALL_ERR|GET {path} failed [{status}]: {snippet}"));
+                return;
+            }
+            let parsed: serde_json::Value = match serde_json::from_str(&body) {
+                Ok(v) => v,
+                Err(e) => {
+                    send(format!("DEL_ALL_ERR|Failed to parse _all_docs response: {e}"));
+                    return;
+                }
+            };
+            let rows: Vec<(String, String)> = parsed
+                .get("rows")
+                .and_then(|r| r.as_array())
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|row| {
+                    let id = row.get("id").and_then(|i| i.as_str())?.to_string();
+                    let rev = row
+                        .get("value")
+                        .and_then(|v| v.get("rev"))
+                        .and_then(|r| r.as_str())?
+                        .to_string();
+                    Some((id, rev))
+                })
+                .collect();
+            let internal_count = rows.iter().filter(|(id, _)| id.starts_with('_')).count();
+            let rows: Vec<(String, String)> = rows.into_iter().filter(|(id, _)| !id.starts_with('_')).collect();
+            let total = rows.len();
+            if total == 0 {
+                send(format!(
+                    "DEL_ALL_DONE|{db}|Delete all Docs: no documents to delete ({internal_count} documents starting with '_' were kept)."
+                ));
+                return;
+            }
+            if internal_count > 0 {
+                send(format!("Skipping {internal_count} document(s) starting with '_' (design documents)."));
+            }
+            send(format!("Found {total} documents in {db}. Deleting..."));
+
+            let bulk_path = format!("/{db_enc}/_bulk_docs");
+            let url = format!("{base}{bulk_path}");
+            let mut deleted = 0usize;
+            for chunk in rows.chunks(100) {
+                let docs: Vec<serde_json::Value> = chunk
+                    .iter()
+                    .map(|(id, rev)| serde_json::json!({ "_id": id, "_rev": rev, "_deleted": true }))
+                    .collect();
+                let payload = serde_json::json!({ "docs": docs });
+                send(format!("curl -X POST '{url}' -H 'Content-Type: application/json'  (batch of {})", chunk.len()));
+                let req = http
+                    .post(&url)
+                    .header("Content-Type", "application/json")
+                    .basic_auth(&config.user, Some(&config.password))
+                    .json(&payload);
+                match req.send().await {
+                    Ok(resp) => {
+                        let status = resp.status().as_u16();
+                        let body = resp.text().await.unwrap_or_default();
+                        if (200..300).contains(&status) {
+                            deleted += chunk.len();
+                            send(format!("Deleted {deleted}/{total} documents..."));
+                        } else {
+                            let snippet: String = body.chars().take(200).collect();
+                            send(format!("DEL_ALL_ERR|_bulk_docs failed [{status}]: {snippet}"));
+                            return;
+                        }
+                    }
+                    Err(e) => {
+                        send(format!("DEL_ALL_ERR|_bulk_docs request failed: {e}"));
+                        return;
+                    }
+                }
+            }
+            send(format!(
+                "DEL_ALL_DONE|{db}|Delete all Docs finished: {deleted} documents deleted from {db}."
+            ));
+        });
+    }
+
+    fn purge_all_server_dbs(&mut self, ctx: &egui::Context) {
+        let config = self.current_connection_config();
+        let pending = self.pending_log.clone();
+        let ctx2 = ctx.clone();
+        self.purge_all_running = true;
+        self.log_lines.push_str("\nPurge deleted Docs (all databases) starting...");
+        tokio::spawn(async move {
+            let send = |msg: String| {
+                println!("{msg}");
+                if let Ok(mut p) = pending.lock() {
+                    p.push(msg);
+                }
+                ctx2.request_repaint();
+            };
+            let client = match couch_rs::Client::new(&config.host, &config.user, &config.password) {
+                Ok(c) => c,
+                Err(e) => {
+                    send(format!("DEL_PURGE_ALL_ERR|Failed to connect: {e}"));
+                    return;
+                }
+            };
+            let dbs = match client.list_dbs().await {
+                Ok(d) => d,
+                Err(e) => {
+                    send(format!("DEL_PURGE_ALL_ERR|Failed to list databases: {e}"));
+                    return;
+                }
+            };
+            let total = dbs.len();
+            send(format!("Found {total} databases."));
+            let base = config.host.trim_end_matches('/').to_string();
+            let http = reqwest::Client::new();
+            let user = config.user.clone();
+            let password = config.password.clone();
+            let host = config.host.clone();
+            let mut failures = 0usize;
+            for (idx, dbname) in dbs.into_iter().enumerate() {
+                let i = idx + 1;
+                let db_enc = dbname.replace('/', "%2F");
+                send(Self::curl_command(&host, &user, &password, "GET", &format!("/{db_enc}/_changes"), None));
+                match purge_db_deleted_docs(&http, &base, &user, &password, &dbname, send.clone()).await {
+                    Ok(line) => {
+                        send(format!("[{i}/{total}] {line}"));
+                    }
+                    Err(e) => {
+                        failures += 1;
+                        send(format!("[{i}/{total}] {dbname}: {e}"));
+                    }
+                }
+            }
+            send(format!(
+                "DEL_PURGE_ALL_DONE|Purge deleted Docs finished: {total} databases processed, {failures} failure(s)."
+            ));
+        });
+    }
+
+    fn purge_deleted_docs(&mut self, ctx: &egui::Context, db: &str) {
         let config = self.current_connection_config();
         let pending = self.pending_log.clone();
         let ctx2 = ctx.clone();
         let db = db.to_string();
         let db_enc = db.replace('/', "%2F");
-        let path = format!("/{db_enc}/_all_docs?limit=1");
-        let curl = Self::curl_command(&config.host, "", "", "GET", &path, None);
+        let path = format!("/{db_enc}/_changes");
+        let curl = Self::curl_command(&config.host, &config.user, &config.password, "GET", &path, None);
+        self.log_lines.push_str(&format!("\n{curl}"));
+        let user = config.user.clone();
+        let password = config.password.clone();
+        let host = config.host.clone();
+        tokio::spawn(async move {
+            let send = |msg: String| {
+                println!("{msg}");
+                if let Ok(mut p) = pending.lock() {
+                    p.push(msg);
+                }
+                ctx2.request_repaint();
+            };
+            let base = host.trim_end_matches('/').to_string();
+            let http = reqwest::Client::new();
+            match purge_db_deleted_docs(&http, &base, &user, &password, &db, send.clone()).await {
+                Ok(line) => send(format!("DEL_PURGE_OK|{line}")),
+                Err(e) => send(format!("DEL_PURGE_ERR|{db}: {e}")),
+            }
+        });
+    }
+
+    fn create_doc(&mut self, ctx: &egui::Context, db: &str, id: &str) {
+        let config = self.current_connection_config();
+        let pending = self.pending_log.clone();
+        let ctx2 = ctx.clone();
+        let db = db.to_string();
+        let doc = self
+            .new_doc_json
+            .clone()
+            .unwrap_or(serde_json::json!({}));
+        let body = serde_json::to_string(&doc).unwrap_or_else(|_| doc.to_string());
+        let id = id.trim().to_string();
+        let base = config.host.trim_end_matches('/').to_string();
+        let db_enc = db.replace('/', "%2F");
+        let (method, path) = if id.is_empty() {
+            ("POST", format!("/{db_enc}"))
+        } else {
+            ("PUT", format!("/{db_enc}/{}", id.replace('/', "%2F")))
+        };
+        let curl = Self::curl_command(&config.host, &config.user, &config.password, method, &path, Some(&body));
         self.log_lines.push_str(&format!("\n{curl}"));
         tokio::spawn(async move {
-            let base = config.host.trim_end_matches('/').to_string();
-            let url = format!("{base}{path}");
             let http = reqwest::Client::new();
-            let req = http.get(&url);
+            let url = format!("{base}{path}");
+            let req = if method == "POST" {
+                http.post(&url)
+            } else {
+                http.put(&url)
+            };
+            let req = req
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json")
+                .basic_auth(&config.user, Some(&config.password))
+                .body(body);
             let msg = match req.send().await {
                 Ok(resp) => {
                     let status = resp.status().as_u16();
                     match resp.text().await {
                         Ok(body) => {
                             let snippet: String = body.chars().take(200).collect();
-                            match status {
-                                200 => format!(
-                                    "PUBLIC_ACCESS|{db}: public read access: YES - readable without credentials [200] {snippet}"
-                                ),
-                                401 | 403 => format!(
-                                    "PUBLIC_ACCESS|{db}: public read access: NO - server answered [{status}] (authentication required)"
-                                ),
-                                404 => format!(
-                                    "PUBLIC_ACCESS|{db}: public read access: NO - database not found (or not visible) [404]"
-                                ),
-                                _ => format!(
-                                    "PUBLIC_ACCESS|{db}: public read access: unknown [{status}] {snippet}"
-                                ),
+                            if (200..300).contains(&status) {
+                                let created_id = serde_json::from_str::<serde_json::Value>(&body)
+                                    .ok()
+                                    .and_then(|v| v.get("id").and_then(|i| i.as_str()).map(|s| s.to_string()))
+                                    .or_else(|| Some(id.clone()))
+                                    .unwrap_or_default();
+                                format!("DOC_CREATED|{db}|Created document {created_id} [{status}]")
+                            } else if status == 409 {
+                                format!("DOC_CREATE_ERR|Document already exists [{status}]")
+                            } else {
+                                format!("DOC_CREATE_ERR|Create failed [{status}]: {snippet}")
                             }
                         }
-                        Err(e) => format!("PUBLIC_ACCESS|{db}: check failed: {e}"),
+                        Err(e) => format!("DOC_CREATE_ERR|Create failed: {e}"),
                     }
                 }
-                Err(e) => format!("PUBLIC_ACCESS|{db}: check failed: {e}"),
+                Err(e) => format!("DOC_CREATE_ERR|Create failed: {e}"),
             };
             println!("{msg}");
             if let Ok(mut p) = pending.lock() {
@@ -1336,8 +1906,7 @@ impl MyEguiApp {
             return;
         }
         if !host.starts_with("http://") && !host.starts_with("https://") {
-            host = format!("http://{host}");
-            self.host = host.clone();
+            host = format!("https://{host}");
         }
         self.connected = false;
         self.connected_host.clear();
@@ -1350,20 +1919,53 @@ impl MyEguiApp {
         self.editing_user = None;
         self.confirm_delete = None;
         self.read_only_public = false;
+        self.new_doc_mode = false;
+        self.new_doc_json = None;
+        self.new_doc_id_input.clear();
+        self.db_infos.clear();
+        self.db_list.clear();
         self.log_lines.push_str(&format!(
             "\n{}",
-            Self::curl_command(&host, &user, &password, "GET", "/_all_dbs", None)
+            Self::curl_command(&host, &user, &password, "GET", &test_path(&self.database), None)
         ));
         let pending = self.pending_log.clone();
         let ctx = ctx.clone();
         let host_for_state = host.clone();
+        let db_test = self.database.trim().to_string();
         tokio::spawn(async move {
-            let msg = match couch_rs::Client::new(&host, &user, &password) {
-                Ok(client) => match client.list_dbs().await {
-                    Ok(dbs) => format!("CONNECTED_OK|{host_for_state}|Connected to {host} ({} databases)", dbs.len()),
+            let msg = if !db_test.is_empty() {
+                let base = host.trim_end_matches('/').to_string();
+                let db_enc = db_test.replace('/', "%2F");
+                let url = format!("{base}/{db_enc}");
+                let http = reqwest::Client::new();
+                let req = http.get(&url);
+                let req = if !user.is_empty() || !password.is_empty() {
+                    req.basic_auth(&user, Some(&password))
+                } else {
+                    req
+                };
+                let (status, body) = match req.send().await {
+                    Ok(resp) => {
+                        let s = resp.status().as_u16();
+                        let b = resp.text().await.unwrap_or_default();
+                        (s, b)
+                    }
+                    Err(e) => (0, e.to_string()),
+                };
+                if (200..300).contains(&status) {
+                    format!("CONNECTED_OK|{host_for_state}|Connected to {host} (database {db_test})")
+                } else {
+                    let snippet: String = body.chars().take(160).collect();
+                    format!("CONNECTED_ERR|Connection failed: {host}: database {db_test} [{status}] {snippet}")
+                }
+            } else {
+                match couch_rs::Client::new(&host, &user, &password) {
+                    Ok(client) => match client.list_dbs().await {
+                        Ok(dbs) => format!("CONNECTED_OK|{host_for_state}|Connected to {host} ({} databases)", dbs.len()),
+                        Err(e) => format!("CONNECTED_ERR|Connection failed: {host}: {e}"),
+                    },
                     Err(e) => format!("CONNECTED_ERR|Connection failed: {host}: {e}"),
-                },
-                Err(e) => format!("CONNECTED_ERR|Connection failed: {host}: {e}"),
+                }
             };
             println!("{msg}");
             if let Ok(mut p) = pending.lock() {
@@ -1377,10 +1979,14 @@ impl MyEguiApp {
 impl eframe::App for MyEguiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let mut fetch_db_info = false;
+        let mut open_db: Option<String> = None;
         let mut refresh_doc = false;
         let mut refresh_users = false;
         let mut refresh_readonly = false;
         let mut check_public = false;
+        let mut create_refresh = false;
+        let mut delete_all_refresh: Option<String> = None;
+        let mut probe_ok: Option<serde_json::Value> = None;
         if let Ok(mut pending) = self.pending_log.lock() {
             if !pending.is_empty() {
                 for msg in pending.drain(..) {
@@ -1388,7 +1994,18 @@ impl eframe::App for MyEguiApp {
                         if let Some((h, m)) = rest.split_once('|') {
                             self.connected = true;
                             self.connected_host = h.to_string();
-                            fetch_db_info = true;
+                            let db = self.database.trim().to_string();
+                            if !db.is_empty() {
+                                self.selected_db = Some(db.clone());
+                                self.doc_filter.clear();
+                                self.doc_list.clear();
+                                self.selected_doc = None;
+                                self.doc_json = None;
+                                self.doc_loading = false;
+                                open_db = Some(db);
+                            } else {
+                                fetch_db_info = true;
+                            }
                             self.log_lines.push('\n');
                             self.log_lines.push_str(m);
                         } else {
@@ -1498,6 +2115,52 @@ impl eframe::App for MyEguiApp {
                     } else if let Some(m) = msg.strip_prefix("DOC_SAVE_ERR|") {
                         self.log_lines.push('\n');
                         self.log_lines.push_str(m);
+                    } else if let Some(rest) = msg.strip_prefix("DOC_CREATED|") {
+                        if let Some((_db, log)) = rest.split_once('|') {
+                            self.new_doc_mode = false;
+                            self.new_doc_id_input.clear();
+                            self.new_doc_json = None;
+                            self.log_lines.push('\n');
+                            self.log_lines.push_str(log);
+                            create_refresh = true;
+                        } else {
+                            self.log_lines.push('\n');
+                            self.log_lines.push_str(rest);
+                        }
+                    } else if let Some(m) = msg.strip_prefix("DOC_CREATE_ERR|") {
+                        self.log_lines.push('\n');
+                        self.log_lines.push_str(m);
+                    } else if let Some(rest) = msg.strip_prefix("DEL_ALL_DONE|") {
+                        if let Some((db, log)) = rest.split_once('|') {
+                            self.delete_all_running = false;
+                            self.delete_all_open = false;
+                            self.log_lines.push('\n');
+                            self.log_lines.push_str(log);
+                            delete_all_refresh = Some(db.to_string());
+                        } else {
+                            self.delete_all_running = false;
+                            self.log_lines.push('\n');
+                            self.log_lines.push_str(rest);
+                        }
+                    } else if let Some(m) = msg.strip_prefix("DEL_ALL_ERR|") {
+                        self.delete_all_running = false;
+                        self.log_lines.push('\n');
+                        self.log_lines.push_str(m);
+                    } else if let Some(m) = msg.strip_prefix("DEL_PURGE_OK|") {
+                        self.log_lines.push('\n');
+                        self.log_lines.push_str(m);
+                    } else if let Some(m) = msg.strip_prefix("DEL_PURGE_ERR|") {
+                        self.log_lines.push('\n');
+                        self.log_lines.push_str(m);
+                    } else if let Some(m) = msg.strip_prefix("DEL_PURGE_ALL_DONE|") {
+                        self.purge_all_running = false;
+                        self.purge_all_open = false;
+                        self.log_lines.push('\n');
+                        self.log_lines.push_str(m);
+                    } else if let Some(m) = msg.strip_prefix("DEL_PURGE_ALL_ERR|") {
+                        self.purge_all_running = false;
+                        self.log_lines.push('\n');
+                        self.log_lines.push_str(m);
                     } else if let Some(rest) = msg.strip_prefix("USERS|") {
                         self.users_loading = false;
                         if let Ok(env) = serde_json::from_str::<serde_json::Value>(rest) {
@@ -1539,9 +2202,6 @@ impl eframe::App for MyEguiApp {
                             self.log_lines.push('\n');
                             self.log_lines.push_str(rest);
                         }
-                    } else if let Some(m) = msg.strip_prefix("PUBLIC_ACCESS|") {
-                        self.log_lines.push('\n');
-                        self.log_lines.push_str(m);
                     } else if let Some(rest) = msg.strip_prefix("DB_PUBLIC|") {
                         if let Ok(env) = serde_json::from_str::<serde_json::Value>(rest) {
                             if let Some(statuses) = env.get("statuses").and_then(|v| v.as_array()) {
@@ -1561,6 +2221,30 @@ impl eframe::App for MyEguiApp {
                             self.log_lines.push('\n');
                             self.log_lines.push_str(rest);
                         }
+                    } else if let Some(rest) = msg.strip_prefix("ACCESS_TEST_ROW|") {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(rest) {
+                            self.access_test_results.push(AccessTestRow {
+                                name: v.get("name").and_then(|x| x.as_str()).unwrap_or("?").to_string(),
+                                ok: v.get("ok").and_then(|x| x.as_bool()).unwrap_or(false),
+                                detail: v.get("detail").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                            });
+                        } else {
+                            self.log_lines.push('\n');
+                            self.log_lines.push_str(rest);
+                        }
+                    } else if let Some(rest) = msg.strip_prefix("PROBE_OK|") {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(rest) {
+                            probe_ok = Some(v);
+                        } else {
+                            self.log_lines.push('\n');
+                            self.log_lines.push_str(rest);
+                        }
+                    } else if let Some(m) = msg.strip_prefix("PROBE_ERR|") {
+                        self.log_lines.push('\n');
+                        self.log_lines.push_str(m);
+                    } else if msg.strip_prefix("ACCESS_TEST_DONE").is_some() {
+                        self.access_test_running = false;
+                        self.log_lines.push_str("\nAccess test finished.");
                     } else if let Some(m) = msg.strip_prefix("USERS_ERR|") {
                         self.users_loading = false;
                         self.log_lines.push('\n');
@@ -1603,6 +2287,9 @@ impl eframe::App for MyEguiApp {
                 }
             }
         }
+        if let Some(db) = open_db {
+            self.load_docs(ctx, &db);
+        }
         if fetch_db_info {
             self.action = "get_dbs_info".to_string();
             self.run_action(ctx);
@@ -1615,6 +2302,33 @@ impl eframe::App for MyEguiApp {
         }
         if refresh_users {
             self.load_users(ctx);
+        }
+        if let Some(v) = probe_ok.take() {
+            let scheme = v.get("scheme").and_then(|x| x.as_str()).unwrap_or("https").to_string();
+            let host = v.get("host").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let user = v.get("user").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let password = v.get("password").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let database = v.get("database").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let full = format!("{scheme}://{host}");
+            self.host = full.clone();
+            self.save_server_entry(name, full.clone(), user, password, database);
+            self.log_lines
+                .push_str(&format!("\nSaved server entry for {full} ({scheme} works)."));
+        }
+        if let Some(db) = delete_all_refresh {
+            self.doc_list.clear();
+            self.selected_doc = None;
+            self.doc_json = None;
+            self.doc_loading = false;
+            if self.selected_db.as_deref() == Some(db.as_str()) {
+                self.load_docs(ctx, &db);
+            }
+        }
+        if create_refresh {
+            if let Some(db) = self.selected_db.clone() {
+                self.load_docs(ctx, &db);
+            }
         }
         if refresh_readonly {
             self.check_readonly_users(ctx);
@@ -1638,6 +2352,137 @@ impl eframe::App for MyEguiApp {
                 .show(ctx, |ui| {
                     ui.label("Couchy");
                     ui.label("Convenient utility to get and update CouchDB data.");
+                });
+        }
+
+        if self.delete_all_open {
+            let db = self.selected_db.clone().unwrap_or_default();
+            egui::Window::new("Delete all Docs")
+                .resizable(false)
+                .collapsible(false)
+                .default_width(560.0)
+                .show(ctx, |ui| {
+                    ui.label(egui::RichText::new("Warning").strong().color(egui::Color32::from_rgb(230, 90, 90)));
+                    ui.add_space(4.0);
+                    ui.label(format!(
+                        "This permanently deletes ALL documents in database '{db}' except documents whose id starts with '_' (design documents)."
+                    ));
+                    ui.label("This cannot be undone.");
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new(format!("Documents currently loaded: {}", self.doc_list.len())).weak());
+                    ui.add_space(6.0);
+                    if self.delete_all_running {
+                        ui.label("Deleting documents...");
+                    }
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        let running = self.delete_all_running;
+                        if ui.add_enabled(
+                            !running,
+                            egui::Button::new(egui::RichText::new("Delete all Docs").color(egui::Color32::from_rgb(230, 90, 90)).strong()),
+                        ).clicked() {
+                            self.delete_all_docs(ctx, &db);
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.delete_all_open = false;
+                        }
+                    });
+                });
+        }
+
+        if self.purge_all_open {
+            let server = if !self.server_name.trim().is_empty() {
+                self.server_name.trim().to_string()
+            } else if !self.connected_host.trim().is_empty() {
+                self.connected_host.clone()
+            } else {
+                self.host.clone()
+            };
+            egui::Window::new("Purge deleted Docs")
+                .resizable(false)
+                .collapsible(false)
+                .default_width(560.0)
+                .show(ctx, |ui| {
+                    ui.label(egui::RichText::new("Warning").strong().color(egui::Color32::from_rgb(230, 90, 90)));
+                    ui.add_space(4.0);
+                    ui.label(format!(
+                        "This permanently purges deleted documents in ALL databases on server '{server}' (including system databases)."
+                    ));
+                    ui.label("Old revision history of deleted documents is removed. This cannot be undone.");
+                    ui.add_space(6.0);
+                    if self.purge_all_running {
+                        ui.label("Purging deleted documents on all databases...");
+                    }
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        let running = self.purge_all_running;
+                        if ui.add_enabled(
+                            !running,
+                            egui::Button::new(egui::RichText::new("Purge deleted Docs").color(egui::Color32::from_rgb(230, 90, 90)).strong()),
+                        ).clicked() {
+                            self.purge_all_server_dbs(ctx);
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.purge_all_open = false;
+                        }
+                    });
+                });
+        }
+
+        if self.access_test_open {
+            let db = self.access_test_db.clone();
+            egui::Window::new("Access Test")
+                .resizable(false)
+                .default_width(620.0)
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    ui.label(egui::RichText::new(format!("Database: {db}")).strong().monospace());
+                    ui.add_space(4.0);
+                    if self.access_test_results.is_empty() && self.access_test_running {
+                        ui.label("Running tests...");
+                    }
+                    egui::Grid::new("access_test_grid")
+                        .striped(true)
+                        .num_columns(3)
+                        .spacing([16.0, 6.0])
+                        .show(ui, |ui| {
+                            ui.strong("Test");
+                            ui.strong("Result");
+                            ui.strong("Detail");
+                            ui.end_row();
+                            for row in &self.access_test_results {
+                                ui.label(egui::RichText::new(&row.name).monospace());
+                                if row.ok {
+                                    ui.label(
+                                        egui::RichText::new("OK")
+                                            .color(egui::Color32::from_rgb(110, 210, 110))
+                                            .strong(),
+                                    );
+                                } else {
+                                    ui.label(
+                                        egui::RichText::new("FAILED")
+                                            .color(egui::Color32::from_rgb(230, 90, 90))
+                                            .strong(),
+                                    );
+                                }
+                                ui.label(egui::RichText::new(&row.detail).monospace().small());
+                                ui.end_row();
+                            }
+                        });
+                    ui.add_space(6.0);
+                    if self.access_test_running {
+                        ui.label("Running tests...");
+                    }
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        let running = self.access_test_running;
+                        if ui.add_enabled(!running, egui::Button::new("Re-run")).clicked() {
+                            self.start_access_test(ctx, &db);
+                        }
+                        if ui.button("Close").clicked() {
+                            self.access_test_open = false;
+                        }
+                    });
                 });
         }
 
@@ -1691,28 +2536,53 @@ impl eframe::App for MyEguiApp {
                 ui.label("Host:");
                 ui.add(
                     egui::TextEdit::singleline(&mut self.host)
-                        .hint_text("http://localhost:5984")
-                        .desired_width(220.0),
+                        .hint_text("https://localhost:5984")
+                        .desired_width(340.0),
                 );
                 ui.label("User:");
                 ui.add(egui::TextEdit::singleline(&mut self.user).desired_width(100.0));
-                ui.label("Password:");
+                ui.label("Pass:");
                 ui.add(
                     egui::TextEdit::singleline(&mut self.password)
                         .password(true)
                         .desired_width(100.0),
                 );
-                ui.label("Database:");
-                ui.add(egui::TextEdit::singleline(&mut self.database).desired_width(120.0));
-                if ui.button("Quick Connect").clicked() {
+                ui.label("DB:");
+                ui.add(egui::TextEdit::singleline(&mut self.database).desired_width(180.0));
+                if ui.button("Connect").clicked() {
                     self.quick_connect(ctx);
                 }
                 if ui.button("Add/Update Server").clicked() {
-                    self.add_or_update_server();
+                    self.add_or_update_server(ctx);
                 }
             });
             ui.add_space(4.0);
         });
+
+        egui::TopBottomPanel::bottom("log_panel")
+            .resizable(true)
+            .default_height(180.0)
+            .min_height(120.0)
+            .max_height(360.0)
+            .show(ctx, |ui| {
+                ui.group(|ui| {
+                    ui.label("Log");
+                    ui.separator();
+                    egui::ScrollArea::vertical()
+                        .id_source("log_scroll")
+                        .stick_to_bottom(true)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&self.log_lines).monospace(),
+                                )
+                                .selectable(true)
+                                .wrap(),
+                            );
+                        });
+                });
+            });
 
         egui::SidePanel::left("servers_panel")
             .resizable(true)
@@ -1720,7 +2590,7 @@ impl eframe::App for MyEguiApp {
             .min_width(140.0)
             .max_width(220.0)
             .show(ctx, |ui| {
-                ui.heading("Servers");
+                ui.label(egui::RichText::new("Servers").strong().size(18.0));
                 ui.separator();
                 let mut clicked = None;
                 egui::ScrollArea::vertical().show(ui, |ui| {
@@ -1762,23 +2632,37 @@ impl eframe::App for MyEguiApp {
             .show(ctx, |ui| {
                 if self.connected {
                     if self.doc_json.is_some() || self.doc_loading || self.selected_doc.is_some() {
-                        ui.heading("Document Commands");
+                        ui.label(egui::RichText::new("Document Commands").strong().size(18.0));
                     } else if self.selected_db.is_some() {
-                        ui.heading("Database Commands");
+                        ui.label(egui::RichText::new("Database Commands").strong().size(18.0));
                     } else {
-                        ui.heading("Server Commands");
+                        ui.label(egui::RichText::new("Server Commands").strong().size(18.0));
                     }
                 } else {
-                    ui.heading("Commands");
+                    ui.label(egui::RichText::new("Commands").strong().size(18.0));
                 }
                 ui.separator();
                 if self.connected {
                     if let Some(db) = self.selected_db.clone() {
+                        if ui.button("Create Doc").clicked() {
+                            self.new_doc_mode = true;
+                            self.new_doc_id_input.clear();
+                            self.new_doc_json = Some(serde_json::json!({}));
+                            self.selected_doc = None;
+                            self.doc_json = None;
+                            self.doc_loading = false;
+                        }
+                        if ui.button("Delete all Docs").clicked() {
+                            self.delete_all_open = true;
+                        }
+                        if ui.button("Purge deleted Docs").clicked() {
+                            self.purge_deleted_docs(ctx, &db);
+                        }
                         if ui.button("List all Docs").clicked() {
                             self.run_db_command(ctx, &db, "_all_docs");
                         }
-                        if ui.button("Access database from public").clicked() {
-                            self.check_public_access(ctx, &db);
+                        if ui.button("Access Test").clicked() {
+                            self.start_access_test(ctx, &db);
                         }
                     } else {
                     if ui.button("List DBs").clicked() {
@@ -1861,15 +2745,16 @@ impl eframe::App for MyEguiApp {
                             });
                         }
                     }
+                    if ui.button("Purge deleted Docs").clicked() {
+                        self.purge_all_open = true;
+                    }
                     }
                 }
 
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            let total_h = ui.available_height();
-            let log_h = (total_h * 0.28).max(140.0);
-            let content_h = (total_h - log_h - 24.0).max(120.0);
+            let content_h = ui.available_height().max(120.0);
 
             ui.group(|ui| {
                 ui.set_min_height(content_h);
@@ -1878,9 +2763,9 @@ impl eframe::App for MyEguiApp {
                     let server_label = if !self.server_name.trim().is_empty() {
                         self.server_name.trim().to_string()
                     } else if !self.connected_host.trim().is_empty() {
-                        self.connected_host.trim().to_string()
+                        Self::bare_host(&self.connected_host)
                     } else if !self.host.trim().is_empty() {
-                        self.host.trim().to_string()
+                        Self::bare_host(&self.host)
                     } else {
                         "Couchy".to_string()
                     };
@@ -1903,18 +2788,27 @@ impl eframe::App for MyEguiApp {
                         ui.label(egui::RichText::new("Users").strong());
                     } else if let Some(db) = self.selected_db.clone() {
                         let db_label = Self::db_display_label(&db);
-                        let doc_mode = self.selected_doc.is_some() || self.doc_json.is_some() || self.doc_loading;
+                        let doc_mode = self.new_doc_mode
+                            || self.selected_doc.is_some()
+                            || self.doc_json.is_some()
+                            || self.doc_loading;
                         ui.label(egui::RichText::new("›").weak());
                         if doc_mode {
                             if ui.link(&db_label).clicked() {
                                 self.selected_doc = None;
                                 self.doc_json = None;
                                 self.doc_loading = false;
+                                self.new_doc_mode = false;
+                                self.new_doc_json = None;
+                                self.new_doc_id_input.clear();
                             }
                         } else {
                             ui.label(egui::RichText::new(&db_label).strong());
                         }
-                        if let Some(id) = &self.selected_doc {
+                        if self.new_doc_mode {
+                            ui.label(egui::RichText::new("›").weak());
+                            ui.label(egui::RichText::new("Create Doc").strong().monospace());
+                        } else if let Some(id) = &self.selected_doc {
                             ui.label(egui::RichText::new("›").weak());
                             ui.label(egui::RichText::new(id).strong().monospace());
                         }
@@ -2093,7 +2987,36 @@ impl eframe::App for MyEguiApp {
                         }
                     }
                 } else if let Some(db) = self.selected_db.clone() {
-                    if self.doc_loading || self.doc_json.is_some() {
+                    if self.new_doc_mode {
+                        let mut value = self.new_doc_json.take().unwrap_or(serde_json::json!({}));
+                        ui.horizontal(|ui| {
+                            ui.label("Document ID:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.new_doc_id_input)
+                                    .hint_text("leave empty for auto-generated id")
+                                    .desired_width(320.0)
+                                    .font(egui::TextStyle::Monospace)
+                                    .margin(egui::Margin::symmetric(10.0, 8.0)),
+                            );
+                            if ui.button("Save").clicked() {
+                                self.new_doc_json = Some(value.clone());
+                                let id = self.new_doc_id_input.clone();
+                                self.create_doc(ctx, &db, &id);
+                            }
+                        });
+                        ui.separator();
+                        egui::ScrollArea::both()
+                            .id_source("new_doc_scroll")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                ui.vertical(|ui| {
+                                    json_editor(ui, &mut value, &mut self.new_key_input);
+                                });
+                            });
+                        if self.new_doc_mode {
+                            self.new_doc_json = Some(value);
+                        }
+                    } else if self.doc_loading || self.doc_json.is_some() {
                         let mut editor_doc = self.doc_json.take();
                         ui.horizontal(|ui| {
                             if ui.button("Save").clicked() {
@@ -2288,27 +3211,6 @@ impl eframe::App for MyEguiApp {
                         });
                     });
                 }
-            });
-
-            ui.add_space(8.0);
-            ui.group(|ui| {
-                ui.set_min_height(log_h);
-                ui.set_max_height(log_h);
-                ui.label("Log");
-                ui.separator();
-                egui::ScrollArea::vertical()
-                    .id_source("log_scroll")
-                    .stick_to_bottom(true)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(&self.log_lines).monospace(),
-                            )
-                            .selectable(true)
-                            .wrap(),
-                        );
-                    });
             });
         });
     }
