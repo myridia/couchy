@@ -135,6 +135,24 @@ pub async fn connect(config: &AppConfig) -> Result<String, String> {
     }
 }
 
+pub async fn connect_with_names(config: &AppConfig) -> Result<(String, Vec<String>), String> {
+    let host = normalize_host(&config.host);
+    if host.is_empty() {
+        return Err("Host is empty.".to_string());
+    }
+    if !config.database.trim().is_empty() {
+        let msg = connect(config).await?;
+        return Ok((msg, Vec::new()));
+    }
+    match couch_rs::Client::new(&host, &config.user, &config.password) {
+        Ok(client) => match client.list_dbs().await {
+            Ok(dbs) => Ok((format!("Connected to {host} ({} databases)", dbs.len()), dbs)),
+            Err(e) => Err(format!("Connection failed: {host}: {e}")),
+        },
+        Err(e) => Err(format!("Connection failed: {host}: {e}")),
+    }
+}
+
 pub async fn list_db_names(config: &AppConfig) -> Result<Vec<String>, String> {
     let host = normalize_host(&config.host);
     if host.is_empty() {

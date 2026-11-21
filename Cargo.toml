@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 # https://docs.rs/eframe/latest/eframe/
-eframe = {version= "0.28.1",features = ["wgpu"]}
+eframe = {version= "0.28.1",features = ["wgpu", "persistence"]}
 #wgpu = { version = "*", features = ["webgpu", "webgl"] }
 
 # https://docs.rs/clap/latest/clap/
@@ -30,3 +30,4 @@ tokio-macros = { version = "0.2.0-alpha.6" }
 sqlx = { version = "*", features = ["runtime-tokio", "mysql", "json"] }
 reqwest = { version = "*", features = ["json"] }
 rfd = "*"
+arboard = "3"

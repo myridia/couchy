@@ -13,7 +13,8 @@ async fn main() {
 
     if args.nox != 1 {
         let native_options = eframe::NativeOptions {
-            viewport: egui::ViewportBuilder::default().with_inner_size([1400.0, 1100.0]),
+            viewport: egui::ViewportBuilder::default().with_inner_size([1400.0, 900.0]),
+            persist_window: true,
             ..Default::default()
         };
         let _ = eframe::run_native(
@@ -500,6 +501,7 @@ struct MyEguiApp {
     pending_log: Arc<Mutex<Vec<String>>>,
     window_help_open: bool,
     window_about_open: bool,
+    show_log_panel: bool,
     action: String,
     servers: Vec<ServerConfig>,
     selected_server: Option<usize>,
@@ -554,6 +556,7 @@ impl Default for MyEguiApp {
             pending_log: Arc::new(Mutex::new(Vec::new())),
             window_help_open: false,
             window_about_open: false,
+            show_log_panel: true,
             action: String::new(),
             servers,
             selected_server: None,
@@ -1393,6 +1396,104 @@ impl MyEguiApp {
         });
     }
 
+    fn disconnect(&mut self) {
+        self.connected = false;
+        self.connected_host.clear();
+        self.db_list.clear();
+        self.db_infos.clear();
+        self.selected_db = None;
+        self.doc_list.clear();
+        self.selected_doc = None;
+        self.doc_json = None;
+        self.doc_loading = false;
+        self.users_view = false;
+        self.users.clear();
+        self.users_loading = false;
+        self.show_add_user = false;
+        self.editing_user = None;
+        self.confirm_delete = None;
+        self.log_lines.push_str("\nDisconnected.");
+    }
+
+    fn server_name_for_files(&self) -> String {
+        if !self.server_name.trim().is_empty() {
+            self.server_name.clone()
+        } else if !self.connected_host.trim().is_empty() {
+            self.connected_host.clone()
+        } else {
+            self.host.clone()
+        }
+    }
+
+    fn save_designs(&mut self, ctx: &egui::Context) {
+        if let Some(path) = rfd::FileDialog::new().pick_folder() {
+            let config = self.current_connection_config();
+            let pending = self.pending_log.clone();
+            let ctx2 = ctx.clone();
+            let server_name = self.server_name_for_files();
+            self.log_lines.push_str(&format!("\nSaving all Designs to {} ...", path.display()));
+            tokio::spawn(async move {
+                let msg = match save_all_server_design(&config, &path, &server_name, Some(pending.clone()), Some(ctx2.clone())).await {
+                    Ok(_) => format!("Save all Designs completed: {}", path.display()),
+                    Err(e) => format!("Save all Designs failed: {e}"),
+                };
+                println!("{msg}");
+                if let Ok(mut p) = pending.lock() {
+                    p.push(msg);
+                }
+                ctx2.request_repaint();
+            });
+        }
+    }
+
+    fn save_docs(&mut self, ctx: &egui::Context) {
+        if let Some(path) = rfd::FileDialog::new().pick_folder() {
+            let config = self.current_connection_config();
+            let pending = self.pending_log.clone();
+            let ctx2 = ctx.clone();
+            let server_name = self.server_name_for_files();
+            self.log_lines.push_str(&format!("\nSaving all Docs to {} ...", path.display()));
+            tokio::spawn(async move {
+                let msg = match save_all_server_dbs(&path, &server_name, &config, Some(pending.clone()), Some(ctx2.clone())).await {
+                    Ok(_) => format!("Save all Docs completed: {}", path.display()),
+                    Err(e) => format!("Save all Docs failed: {e}"),
+                };
+                println!("{msg}");
+                if let Ok(mut p) = pending.lock() {
+                    p.push(msg);
+                }
+                ctx2.request_repaint();
+            });
+        }
+    }
+
+    fn log_panel(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::bottom("log_panel")
+            .resizable(true)
+            .default_height(180.0)
+            .min_height(120.0)
+            .max_height(360.0)
+            .show(ctx, |ui| {
+                ui.group(|ui| {
+                    ui.label("Log");
+                    ui.separator();
+                    egui::ScrollArea::vertical()
+                        .id_source("log_scroll")
+                        .stick_to_bottom(true)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&self.log_lines).monospace(),
+                                )
+                                .selectable(true)
+                                .wrap(),
+                            );
+                        });
+                });
+            });
+    }
+
     fn quick_connect(&mut self, ctx: &egui::Context) {
         let mut host = self.host.trim().to_string();
         let user = self.user.clone();
@@ -1446,8 +1547,11 @@ impl MyEguiApp {
                     database: db_test.clone(),
                     ..AppConfig::default()
                 };
-                match cmd::connect(&cfg).await {
-                    Ok(m) => format!("CONNECTED_OK|{host_for_state}|{m}"),
+                match cmd::connect_with_names(&cfg).await {
+                    Ok((m, dbs)) => {
+                        let names = serde_json::to_string(&dbs).unwrap_or_else(|_| "[]".to_string());
+                        format!("CONNECTED_OK|{host_for_state}|{m}|{names}")
+                    }
                     Err(e) => format!("CONNECTED_ERR|{e}"),
                 }
             };
@@ -1462,12 +1566,10 @@ impl MyEguiApp {
 
 impl eframe::App for MyEguiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let mut fetch_db_info = false;
         let mut open_db: Option<String> = None;
         let mut refresh_doc = false;
         let mut refresh_users = false;
         let mut refresh_readonly = false;
-        let mut check_public = false;
         let mut create_refresh = false;
         let mut delete_all_refresh: Option<String> = None;
         let mut probe_ok: Option<serde_json::Value> = None;
@@ -1475,9 +1577,15 @@ impl eframe::App for MyEguiApp {
             if !pending.is_empty() {
                 for msg in pending.drain(..) {
                     if let Some(rest) = msg.strip_prefix("CONNECTED_OK|") {
-                        if let Some((h, m)) = rest.split_once('|') {
+                        if let Some((h, detail)) = rest.split_once('|') {
                             self.connected = true;
                             self.connected_host = h.to_string();
+                            let (m, names) = detail.split_once('|').unwrap_or((detail, ""));
+                            if !names.is_empty() {
+                                if let Ok(dbs) = serde_json::from_str::<Vec<String>>(names) {
+                                    self.db_list = dbs;
+                                }
+                            }
                             let db = self.database.trim().to_string();
                             if !db.is_empty() {
                                 self.selected_db = Some(db.clone());
@@ -1487,8 +1595,6 @@ impl eframe::App for MyEguiApp {
                                 self.doc_json = None;
                                 self.doc_loading = false;
                                 open_db = Some(db);
-                            } else {
-                                fetch_db_info = true;
                             }
                             self.log_lines.push('\n');
                             self.log_lines.push_str(m);
@@ -1527,7 +1633,6 @@ impl eframe::App for MyEguiApp {
                         if let Ok(env) = serde_json::from_str::<serde_json::Value>(rest) {
                             if let Some(data) = env.get("data") {
                                 self.db_infos = cmd::parse_db_infos(data);
-                                check_public = !self.db_infos.is_empty();
                             }
                             if let Some(log) = env.get("log").and_then(|v| v.as_str()) {
                                 self.log_lines.push('\n');
@@ -1753,10 +1858,6 @@ impl eframe::App for MyEguiApp {
         if let Some(db) = open_db {
             self.load_docs(ctx, &db);
         }
-        if fetch_db_info {
-            self.action = "get_dbs_info".to_string();
-            self.run_action(ctx);
-        }
         if refresh_doc {
             if let (Some(db), Some(id)) = (self.selected_db.clone(), self.selected_doc.clone()) {
                 self.doc_loading = true;
@@ -1795,9 +1896,6 @@ impl eframe::App for MyEguiApp {
         }
         if refresh_readonly {
             self.check_readonly_users(ctx);
-        }
-        if check_public {
-            self.check_public_dbs(ctx);
         }
         if self.window_help_open {
             egui::Window::new("Help")
@@ -1951,27 +2049,121 @@ impl eframe::App for MyEguiApp {
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
-                ui.menu_button("Couchy", |ui| {
-                    if ui.button("About Couchy").clicked() {
-                        self.window_about_open = true;
+                ui.menu_button("File", |ui| {
+                    if ui.button("Connect").clicked() {
+                        self.quick_connect(ctx);
+                        ui.close_menu();
+                    }
+                    if ui.button("Disconnect").clicked() {
+                        self.disconnect();
                         ui.close_menu();
                     }
                     ui.separator();
-                    if ui.button("Quit Couchy").clicked() {
+                    if ui.button("Save log to file...").clicked() {
+                        if let Some(path) = rfd::FileDialog::new().add_filter("Log", &["log", "txt"]).save_file() {
+                            match std::fs::write(&path, &self.log_lines) {
+                                Ok(_) => self.log_lines.push_str(&format!("\nLog saved to {}", path.display())),
+                                Err(e) => self.log_lines.push_str(&format!("\nSave log failed: {e}")),
+                            }
+                        }
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("Quit").clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 });
 
-                ui.menu_button("Views", |ui| {
-                    if ui.button("Save all_design").clicked() {
-                        self.action = "save_all_design".to_string();
-                        self.log_lines.push_str("\nSelected action: save_all_design");
+                ui.menu_button("Edit", |ui| {
+                    if ui.button("Copy").clicked() {
+                        if !self.log_lines.is_empty() {
+                            ctx.copy_text(self.log_lines.clone());
+                        }
                         ui.close_menu();
                     }
+                    if ui.button("Paste").clicked() {
+                        match arboard::Clipboard::new() {
+                            Ok(mut clipboard) => match clipboard.get_text() {
+                                Ok(text) if !text.is_empty() => {
+                                    self.log_lines.push('\n');
+                                    self.log_lines.push_str(&text);
+                                }
+                                Ok(_) => {}
+                                Err(e) => self.log_lines.push_str(&format!("\nPaste failed: {e}")),
+                            },
+                            Err(e) => self.log_lines.push_str(&format!("\nClipboard unavailable: {e}")),
+                        }
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("Clear log").clicked() {
+                        self.log_lines.clear();
+                        ui.close_menu();
+                    }
+                });
+
+                ui.menu_button("View", |ui| {
+                    if ui.button("Databases").clicked() {
+                        self.users_view = false;
+                        self.show_add_user = false;
+                        self.selected_db = None;
+                        self.db_infos.clear();
+                        self.doc_list.clear();
+                        self.selected_doc = None;
+                        self.doc_json = None;
+                        self.doc_loading = false;
+                        ui.close_menu();
+                    }
+                    if ui.button("DB info").clicked() {
+                        self.users_view = false;
+                        self.selected_db = None;
+                        if self.db_infos.is_empty() {
+                            self.action = "get_dbs_info".to_string();
+                            self.run_action(ctx);
+                        }
+                        ui.close_menu();
+                    }
+                    if ui.button("Users").clicked() {
+                        self.users_view = true;
+                        self.show_add_user = false;
+                        self.confirm_delete = None;
+                        self.load_users(ctx);
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("Toggle Log panel").clicked() {
+                        self.show_log_panel = !self.show_log_panel;
+                        ui.close_menu();
+                    }
+                });
+
+                ui.menu_button("Tools", |ui| {
+                    if ui.button("Load DB info").clicked() {
+                        self.users_view = false;
+                        self.selected_db = None;
+                        self.action = "get_dbs_info".to_string();
+                        self.run_action(ctx);
+                        ui.close_menu();
+                    }
+                    if ui.button("Check public access").clicked() {
+                        self.check_public_dbs(ctx);
+                        ui.close_menu();
+                    }
+                    if ui.button("Access test").clicked() {
+                        if let Some(db) = self.selected_db.clone() {
+                            self.start_access_test(ctx, &db);
+                        } else {
+                            self.log_lines.push_str("\nSelect a database first.");
+                        }
+                        ui.close_menu();
+                    }
+                    ui.separator();
                     if ui.button("Save all Designs").clicked() {
-                        self.action = "save_all_server_design".to_string();
-                        self.log_lines
-                            .push_str("\nSelected action: save_all_server_design");
+                        self.save_designs(ctx);
+                        ui.close_menu();
+                    }
+                    if ui.button("Save all Docs").clicked() {
+                        self.save_docs(ctx);
                         ui.close_menu();
                     }
                 });
@@ -1985,6 +2177,10 @@ impl eframe::App for MyEguiApp {
                 ui.menu_button("Help", |ui| {
                     if ui.button("Help").clicked() {
                         self.window_help_open = true;
+                        ui.close_menu();
+                    }
+                    if ui.button("About Couchy").clicked() {
+                        self.window_about_open = true;
                         ui.close_menu();
                     }
                 });
@@ -2022,30 +2218,30 @@ impl eframe::App for MyEguiApp {
             ui.add_space(4.0);
         });
 
-        egui::TopBottomPanel::bottom("log_panel")
-            .resizable(true)
-            .default_height(180.0)
-            .min_height(120.0)
-            .max_height(360.0)
-            .show(ctx, |ui| {
-                ui.group(|ui| {
-                    ui.label("Log");
-                    ui.separator();
-                    egui::ScrollArea::vertical()
-                        .id_source("log_scroll")
-                        .stick_to_bottom(true)
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(&self.log_lines).monospace(),
-                                )
-                                .selectable(true)
-                                .wrap(),
-                            );
-                        });
-                });
+        egui::TopBottomPanel::bottom("status_panel").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                let (state, color) = if self.connected {
+                    ("Connected", egui::Color32::from_rgb(110, 210, 110))
+                } else {
+                    ("Disconnected", egui::Color32::from_gray(150))
+                };
+                ui.label(egui::RichText::new(state).color(color).small());
+                ui.separator();
+                let host = if self.connected_host.is_empty() {
+                    "-".to_string()
+                } else {
+                    self.connected_host.clone()
+                };
+                ui.label(egui::RichText::new(host).monospace().small());
+                ui.separator();
+                let db = self.selected_db.as_deref().unwrap_or("-");
+                ui.label(egui::RichText::new(format!("Database: {db}")).small());
             });
+        });
+
+        if self.show_log_panel {
+            self.log_panel(ctx);
+        }
 
         egui::SidePanel::left("servers_panel")
             .resizable(true)
@@ -2128,7 +2324,7 @@ impl eframe::App for MyEguiApp {
                             self.start_access_test(ctx, &db);
                         }
                     } else {
-                    if ui.button("List DBs").clicked() {
+                    if ui.button("Load DB info").clicked() {
                         self.users_view = false;
                         self.selected_db = None;
                         self.doc_filter.clear();
@@ -2138,6 +2334,9 @@ impl eframe::App for MyEguiApp {
                         self.doc_loading = false;
                         self.action = "get_dbs_info".to_string();
                         self.run_action(ctx);
+                    }
+                    if ui.button("Check public access").clicked() {
+                        self.check_public_dbs(ctx);
                     }
                     if ui.button("List users").clicked() {
                         self.users_view = true;
@@ -2156,57 +2355,10 @@ impl eframe::App for MyEguiApp {
                         self.read_only_public = false;
                     }
                     if ui.button("Save all Designs").clicked() {
-                        if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                            let config = self.current_connection_config();
-                            let pending = self.pending_log.clone();
-                            let ctx2 = ctx.clone();
-                            let server_name = if !self.server_name.trim().is_empty() {
-                                self.server_name.clone()
-                            } else if !self.connected_host.trim().is_empty() {
-                                self.connected_host.clone()
-                            } else {
-                                self.host.clone()
-                            };
-                            self.action = "save_all_server_design".to_string();
-                            self.log_lines.push_str(&format!("\nSaving all Designs to {} ...", path.display()));
-                            tokio::spawn(async move {
-                                let msg = match save_all_server_design(&config, &path, &server_name, Some(pending.clone()), Some(ctx2.clone())).await {
-                                    Ok(_) => format!("Save all Designs completed: {}", path.display()),
-                                    Err(e) => format!("Save all Designs failed: {e}"),
-                                };
-                                println!("{msg}");
-                                if let Ok(mut p) = pending.lock() {
-                                    p.push(msg);
-                                }
-                                ctx2.request_repaint();
-                            });
-                        }
+                        self.save_designs(ctx);
                     }
                     if ui.button("Save all Docs").clicked() {
-                        if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                            let config = self.current_connection_config();
-                            let pending = self.pending_log.clone();
-                            let ctx2 = ctx.clone();
-                            let server_name = if !self.server_name.trim().is_empty() {
-                                self.server_name.clone()
-                            } else if !self.connected_host.trim().is_empty() {
-                                self.connected_host.clone()
-                            } else {
-                                self.host.clone()
-                            };
-                            self.log_lines.push_str(&format!("\nSaving all Docs to {} ...", path.display()));
-                            tokio::spawn(async move {
-                                let msg = match save_all_server_dbs(&path, &server_name, &config, Some(pending.clone()), Some(ctx2.clone())).await {
-                                    Ok(_) => format!("Save all Docs completed: {}", path.display()),
-                                    Err(e) => format!("Save all Docs failed: {e}"),
-                                };
-                                println!("{msg}");
-                                if let Ok(mut p) = pending.lock() {
-                                    p.push(msg);
-                                }
-                                ctx2.request_repaint();
-                            });
-                        }
+                        self.save_docs(ctx);
                     }
                     if ui.button("Purge deleted Docs").clicked() {
                         self.purge_all_open = true;
@@ -2638,7 +2790,13 @@ impl eframe::App for MyEguiApp {
                 } else if self.db_list.is_empty() {
                     ui.label("Controls / content area");
                 } else {
-                    ui.label("Databases");
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(format!("Databases ({})", self.db_list.len())).strong());
+                        if ui.button("Load DB info").clicked() {
+                            self.action = "get_dbs_info".to_string();
+                            self.run_action(ctx);
+                        }
+                    });
                     egui::ScrollArea::vertical().id_source("db_list_scroll").show(ui, |ui| {
                         ui.vertical(|ui| {
                             for db in &self.db_list.clone() {
