@@ -7,6 +7,27 @@ use couchy::view::*;
 use eframe::egui;
 use std::sync::{Arc, Mutex};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AppMode {
+    Server,
+    Dbs,
+    Docs,
+    Users,
+    Settings,
+}
+
+impl AppMode {
+    fn label(self) -> &'static str {
+        match self {
+            AppMode::Server => "Server",
+            AppMode::Dbs => "Dbs",
+            AppMode::Docs => "Docs",
+            AppMode::Users => "Users",
+            AppMode::Settings => "Settings",
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
@@ -503,6 +524,8 @@ struct MyEguiApp {
     window_about_open: bool,
     show_log_panel: bool,
     action: String,
+    active_command: Option<String>,
+    mode: AppMode,
     servers: Vec<ServerConfig>,
     selected_server: Option<usize>,
     base_config: AppConfig,
@@ -522,7 +545,6 @@ struct MyEguiApp {
     new_doc_id_input: String,
     new_doc_json: Option<serde_json::Value>,
     users: Vec<UserRow>,
-    users_view: bool,
     users_loading: bool,
     show_add_user: bool,
     editing_user: Option<UserRow>,
@@ -558,6 +580,8 @@ impl Default for MyEguiApp {
             window_about_open: false,
             show_log_panel: true,
             action: String::new(),
+            active_command: None,
+            mode: AppMode::Server,
             servers,
             selected_server: None,
             base_config: cfg,
@@ -577,7 +601,6 @@ impl Default for MyEguiApp {
             new_doc_id_input: String::new(),
             new_doc_json: None,
             users: Vec::new(),
-            users_view: false,
             users_loading: false,
             show_add_user: false,
             editing_user: None,
@@ -1396,7 +1419,47 @@ impl MyEguiApp {
         });
     }
 
+    fn command_button(&mut self, ui: &mut egui::Ui, key: &str, label: &str) -> bool {
+        let active = self.active_command.as_deref() == Some(key);
+        if ui.selectable_label(active, label).clicked() {
+            self.active_command = Some(key.to_string());
+            true
+        } else {
+            false
+        }
+    }
+
+    fn set_mode(&mut self, mode: AppMode) {
+        if mode != AppMode::Docs {
+            self.selected_doc = None;
+            self.doc_json = None;
+            self.doc_loading = false;
+            self.new_doc_mode = false;
+            self.new_doc_json = None;
+            self.new_doc_id_input.clear();
+            self.delete_all_open = false;
+            self.access_test_open = false;
+            self.access_test_results.clear();
+            self.access_test_db.clear();
+        }
+        if mode != AppMode::Dbs && mode != AppMode::Docs {
+            self.selected_db = None;
+            self.doc_list.clear();
+            self.doc_filter.clear();
+            self.purge_all_open = false;
+        }
+        if mode != AppMode::Users {
+            self.show_add_user = false;
+            self.confirm_delete = None;
+        }
+        if self.mode != mode {
+            self.active_command = None;
+        }
+        self.mode = mode;
+    }
+
     fn disconnect(&mut self) {
+        self.set_mode(AppMode::Server);
         self.connected = false;
         self.connected_host.clear();
         self.db_list.clear();
@@ -1406,7 +1469,6 @@ impl MyEguiApp {
         self.selected_doc = None;
         self.doc_json = None;
         self.doc_loading = false;
-        self.users_view = false;
         self.users.clear();
         self.users_loading = false;
         self.show_add_user = false;
@@ -1467,6 +1529,39 @@ impl MyEguiApp {
         }
     }
 
+    fn copy_log(&self, ctx: &egui::Context) {
+        if !self.log_lines.is_empty() {
+            ctx.copy_text(self.log_lines.clone());
+        }
+    }
+
+    fn paste_log(&mut self) {
+        match arboard::Clipboard::new() {
+            Ok(mut clipboard) => match clipboard.get_text() {
+                Ok(text) if !text.is_empty() => {
+                    self.log_lines.push('\n');
+                    self.log_lines.push_str(&text);
+                }
+                Ok(_) => {}
+                Err(e) => self.log_lines.push_str(&format!("\nPaste failed: {e}")),
+            },
+            Err(e) => self.log_lines.push_str(&format!("\nClipboard unavailable: {e}")),
+        }
+    }
+
+    fn clear_log(&mut self) {
+        self.log_lines.clear();
+    }
+
+    fn save_log(&mut self) {
+        if let Some(path) = rfd::FileDialog::new().add_filter("Log", &["log", "txt"]).save_file() {
+            match std::fs::write(&path, &self.log_lines) {
+                Ok(_) => self.log_lines.push_str(&format!("\nLog saved to {}", path.display())),
+                Err(e) => self.log_lines.push_str(&format!("\nSave log failed: {e}")),
+            }
+        }
+    }
+
     fn log_panel(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom("log_panel")
             .resizable(true)
@@ -1475,7 +1570,22 @@ impl MyEguiApp {
             .max_height(360.0)
             .show(ctx, |ui| {
                 ui.group(|ui| {
-                    ui.label("Log");
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Log").strong());
+                        ui.separator();
+                        if ui.button("Copy").clicked() {
+                            self.copy_log(ctx);
+                        }
+                        if ui.button("Paste").clicked() {
+                            self.paste_log();
+                        }
+                        if ui.button("Clear log").clicked() {
+                            self.clear_log();
+                        }
+                        if ui.button("Save log").clicked() {
+                            self.save_log();
+                        }
+                    });
                     ui.separator();
                     egui::ScrollArea::vertical()
                         .id_source("log_scroll")
@@ -1508,9 +1618,7 @@ impl MyEguiApp {
         self.host = host.clone();
         self.connected = false;
         self.connected_host.clear();
-        self.selected_db = None;
-        self.doc_filter.clear();
-        self.users_view = false;
+        self.set_mode(AppMode::Server);
         self.users.clear();
         self.users_loading = false;
         self.show_add_user = false;
@@ -1573,6 +1681,7 @@ impl eframe::App for MyEguiApp {
         let mut create_refresh = false;
         let mut delete_all_refresh: Option<String> = None;
         let mut probe_ok: Option<serde_json::Value> = None;
+        let mut pending_mode: Option<AppMode> = None;
         if let Ok(mut pending) = self.pending_log.lock() {
             if !pending.is_empty() {
                 for msg in pending.drain(..) {
@@ -1594,7 +1703,10 @@ impl eframe::App for MyEguiApp {
                                 self.selected_doc = None;
                                 self.doc_json = None;
                                 self.doc_loading = false;
+                                pending_mode = Some(AppMode::Docs);
                                 open_db = Some(db);
+                            } else {
+                                pending_mode = Some(AppMode::Dbs);
                             }
                             self.log_lines.push('\n');
                             self.log_lines.push_str(m);
@@ -1603,9 +1715,9 @@ impl eframe::App for MyEguiApp {
                             self.log_lines.push_str(rest);
                         }
                     } else if let Some(m) = msg.strip_prefix("CONNECTED_ERR|") {
+                        pending_mode = Some(AppMode::Server);
                         self.connected = false;
                         self.connected_host.clear();
-                        self.users_view = false;
                         self.users.clear();
                         self.users_loading = false;
                         self.show_add_user = false;
@@ -1622,6 +1734,7 @@ impl eframe::App for MyEguiApp {
                                 self.selected_doc = None;
                                 self.doc_json = None;
                                 self.doc_loading = false;
+                                pending_mode = Some(AppMode::Dbs);
                             }
                             self.log_lines.push('\n');
                             self.log_lines.push_str(m);
@@ -1855,6 +1968,9 @@ impl eframe::App for MyEguiApp {
                 }
             }
         }
+        if let Some(mode) = pending_mode {
+            self.set_mode(mode);
+        }
         if let Some(db) = open_db {
             self.load_docs(ctx, &db);
         }
@@ -2060,12 +2176,7 @@ impl eframe::App for MyEguiApp {
                     }
                     ui.separator();
                     if ui.button("Save log to file...").clicked() {
-                        if let Some(path) = rfd::FileDialog::new().add_filter("Log", &["log", "txt"]).save_file() {
-                            match std::fs::write(&path, &self.log_lines) {
-                                Ok(_) => self.log_lines.push_str(&format!("\nLog saved to {}", path.display())),
-                                Err(e) => self.log_lines.push_str(&format!("\nSave log failed: {e}")),
-                            }
-                        }
+                        self.save_log();
                         ui.close_menu();
                     }
                     ui.separator();
@@ -2076,47 +2187,32 @@ impl eframe::App for MyEguiApp {
 
                 ui.menu_button("Edit", |ui| {
                     if ui.button("Copy").clicked() {
-                        if !self.log_lines.is_empty() {
-                            ctx.copy_text(self.log_lines.clone());
-                        }
+                        self.copy_log(ctx);
                         ui.close_menu();
                     }
                     if ui.button("Paste").clicked() {
-                        match arboard::Clipboard::new() {
-                            Ok(mut clipboard) => match clipboard.get_text() {
-                                Ok(text) if !text.is_empty() => {
-                                    self.log_lines.push('\n');
-                                    self.log_lines.push_str(&text);
-                                }
-                                Ok(_) => {}
-                                Err(e) => self.log_lines.push_str(&format!("\nPaste failed: {e}")),
-                            },
-                            Err(e) => self.log_lines.push_str(&format!("\nClipboard unavailable: {e}")),
-                        }
+                        self.paste_log();
                         ui.close_menu();
                     }
                     ui.separator();
                     if ui.button("Clear log").clicked() {
-                        self.log_lines.clear();
+                        self.clear_log();
                         ui.close_menu();
                     }
                 });
 
                 ui.menu_button("View", |ui| {
+                    if ui.button("Server").clicked() {
+                        self.set_mode(AppMode::Server);
+                        ui.close_menu();
+                    }
                     if ui.button("Databases").clicked() {
-                        self.users_view = false;
-                        self.show_add_user = false;
-                        self.selected_db = None;
+                        self.set_mode(AppMode::Dbs);
                         self.db_infos.clear();
-                        self.doc_list.clear();
-                        self.selected_doc = None;
-                        self.doc_json = None;
-                        self.doc_loading = false;
                         ui.close_menu();
                     }
                     if ui.button("DB info").clicked() {
-                        self.users_view = false;
-                        self.selected_db = None;
+                        self.set_mode(AppMode::Dbs);
                         if self.db_infos.is_empty() {
                             self.action = "get_dbs_info".to_string();
                             self.run_action(ctx);
@@ -2124,10 +2220,12 @@ impl eframe::App for MyEguiApp {
                         ui.close_menu();
                     }
                     if ui.button("Users").clicked() {
-                        self.users_view = true;
-                        self.show_add_user = false;
-                        self.confirm_delete = None;
+                        self.set_mode(AppMode::Users);
                         self.load_users(ctx);
+                        ui.close_menu();
+                    }
+                    if ui.button("Settings").clicked() {
+                        self.set_mode(AppMode::Settings);
                         ui.close_menu();
                     }
                     ui.separator();
@@ -2139,8 +2237,7 @@ impl eframe::App for MyEguiApp {
 
                 ui.menu_button("Tools", |ui| {
                     if ui.button("Load DB info").clicked() {
-                        self.users_view = false;
-                        self.selected_db = None;
+                        self.set_mode(AppMode::Dbs);
                         self.action = "get_dbs_info".to_string();
                         self.run_action(ctx);
                         ui.close_menu();
@@ -2189,31 +2286,37 @@ impl eframe::App for MyEguiApp {
 
         egui::TopBottomPanel::top("connection_bar").show(ctx, |ui| {
             ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.label("Name:");
-                ui.add(egui::TextEdit::singleline(&mut self.server_name).desired_width(120.0));
-                ui.label("Host:");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.host)
-                        .hint_text("https://localhost:5984")
-                        .desired_width(340.0),
-                );
-                ui.label("User:");
-                ui.add(egui::TextEdit::singleline(&mut self.user).desired_width(100.0));
-                ui.label("Pass:");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.password)
-                        .password(true)
-                        .desired_width(100.0),
-                );
-                ui.label("DB:");
-                ui.add(egui::TextEdit::singleline(&mut self.database).desired_width(180.0));
-                if ui.button("Connect").clicked() {
-                    self.quick_connect(ctx);
-                }
-                if ui.button("Add/Update Server").clicked() {
-                    self.add_or_update_server(ctx);
-                }
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Name:");
+                    ui.add(egui::TextEdit::singleline(&mut self.server_name).desired_width(120.0));
+                    ui.label("Host:");
+                    let host_width = (ui.available_width() - 8.0).max(260.0);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.host)
+                            .hint_text("https://localhost:5984")
+                            .desired_width(host_width),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label("User:");
+                    ui.add(egui::TextEdit::singleline(&mut self.user).desired_width(110.0));
+                    ui.label("Pass:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.password)
+                            .password(true)
+                            .desired_width(110.0),
+                    );
+                    ui.label("DB:");
+                    ui.add(egui::TextEdit::singleline(&mut self.database).desired_width(180.0));
+                    ui.add_space(8.0);
+                    if ui.button("Connect").clicked() {
+                        self.quick_connect(ctx);
+                    }
+                    if ui.button("Add/Update Server").clicked() {
+                        self.add_or_update_server(ctx);
+                    }
+                });
             });
             ui.add_space(4.0);
         });
@@ -2249,10 +2352,24 @@ impl eframe::App for MyEguiApp {
             .min_width(140.0)
             .max_width(220.0)
             .show(ctx, |ui| {
-                ui.label(egui::RichText::new("Servers").strong().size(18.0));
+                ui.label(egui::RichText::new("Mode").strong().size(14.0));
+                egui::ScrollArea::horizontal().id_source("mode_scroll").show(ui, |ui| {
+                    for mode in [AppMode::Server, AppMode::Dbs, AppMode::Users, AppMode::Settings] {
+                        if ui.selectable_label(self.mode == mode, mode.label()).clicked() {
+                            self.set_mode(mode);
+                        }
+                    }
+                });
+                if self.selected_db.is_some() {
+                    if ui.selectable_label(self.mode == AppMode::Docs, AppMode::Docs.label()).clicked() {
+                        self.set_mode(AppMode::Docs);
+                    }
+                }
+                ui.separator();
+                ui.label(egui::RichText::new("Connections").strong().size(18.0));
                 ui.separator();
                 let mut clicked = None;
-                egui::ScrollArea::vertical().show(ui, |ui| {
+                egui::ScrollArea::vertical().id_source("connections_scroll").show(ui, |ui| {
                     for (i, server) in self.servers.iter().enumerate() {
                         let selected = self.selected_server == Some(i);
                         if ui
@@ -2270,6 +2387,7 @@ impl eframe::App for MyEguiApp {
                 ui.separator();
                 ui.horizontal(|ui| {
                     if ui.button("New").clicked() {
+                        self.set_mode(AppMode::Server);
                         self.selected_server = None;
                         self.server_name.clear();
                         self.host.clear();
@@ -2289,87 +2407,186 @@ impl eframe::App for MyEguiApp {
             .min_width(190.0)
             .max_width(260.0)
             .show(ctx, |ui| {
-                if self.connected {
-                    if self.doc_json.is_some() || self.doc_loading || self.selected_doc.is_some() {
-                        ui.label(egui::RichText::new("Document Commands").strong().size(18.0));
-                    } else if self.selected_db.is_some() {
-                        ui.label(egui::RichText::new("Database Commands").strong().size(18.0));
-                    } else {
-                        ui.label(egui::RichText::new("Server Commands").strong().size(18.0));
-                    }
-                } else {
-                    ui.label(egui::RichText::new("Commands").strong().size(18.0));
-                }
+                ui.label(egui::RichText::new(self.mode.label()).strong().size(14.0));
                 ui.separator();
-                if self.connected {
-                    if let Some(db) = self.selected_db.clone() {
-                        if ui.button("Create Doc").clicked() {
-                            self.new_doc_mode = true;
-                            self.new_doc_id_input.clear();
-                            self.new_doc_json = Some(serde_json::json!({}));
-                            self.selected_doc = None;
-                            self.doc_json = None;
-                            self.doc_loading = false;
+                match self.mode {
+                    AppMode::Server => {
+                        if self.command_button(ui, "server/list_dbs", "List Dbs") {
+                            self.action = "get_all_dbs".to_string();
+                            self.run_action(ctx);
                         }
-                        if ui.button("Delete all Docs").clicked() {
-                            self.delete_all_open = true;
+                        if self.command_button(ui, "server/dbs_info", "Dbs Info") {
+                            self.action = "get_dbs_info".to_string();
+                            self.run_action(ctx);
                         }
-                        if ui.button("Purge deleted Docs").clicked() {
-                            self.purge_deleted_docs(ctx, &db);
+                        ui.separator();
+                        if self.command_button(ui, "server/open_dbs", "Open Dbs") {
+                            self.set_mode(AppMode::Dbs);
                         }
-                        if ui.button("List all Docs").clicked() {
-                            self.run_db_command(ctx, &db, "_all_docs");
+                        if self.command_button(ui, "server/users", "Users") {
+                            self.set_mode(AppMode::Users);
+                            self.load_users(ctx);
                         }
-                        if ui.button("Access Test").clicked() {
-                            self.start_access_test(ctx, &db);
+                    }
+                    AppMode::Dbs => {
+                        if self.command_button(ui, "dbs/list_dbs", "List Dbs") {
+                            self.action = "get_all_dbs".to_string();
+                            self.run_action(ctx);
                         }
-                    } else {
-                    if ui.button("Load DB info").clicked() {
-                        self.users_view = false;
-                        self.selected_db = None;
-                        self.doc_filter.clear();
-                        self.doc_list.clear();
-                        self.selected_doc = None;
-                        self.doc_json = None;
-                        self.doc_loading = false;
-                        self.action = "get_dbs_info".to_string();
-                        self.run_action(ctx);
+                        if self.command_button(ui, "dbs/dbs_info", "Dbs Info") {
+                            self.action = "get_dbs_info".to_string();
+                            self.run_action(ctx);
+                        }
+                        ui.separator();
+                        if self.command_button(ui, "dbs/public", "Check public access") {
+                            self.check_public_dbs(ctx);
+                        }
+                        if self.command_button(ui, "dbs/save_designs", "Save all Designs") {
+                            self.save_designs(ctx);
+                        }
+                        if self.command_button(ui, "dbs/save_docs", "Save all Docs") {
+                            self.save_docs(ctx);
+                        }
+                        if self.command_button(ui, "dbs/purge", "Purge deleted Docs") {
+                            self.purge_all_open = true;
+                        }
                     }
-                    if ui.button("Check public access").clicked() {
-                        self.check_public_dbs(ctx);
+                    AppMode::Docs => {
+                        if let Some(db) = self.selected_db.clone() {
+                            if self.command_button(ui, "docs/reload", "Reload") {
+                                if self.new_doc_mode {
+                                    self.new_doc_mode = false;
+                                    self.new_doc_json = None;
+                                    self.new_doc_id_input.clear();
+                                    self.doc_list.clear();
+                                    self.selected_doc = None;
+                                    self.doc_json = None;
+                                    self.doc_loading = false;
+                                    self.load_docs(ctx, &db);
+                                } else if self.selected_doc.is_some()
+                                    || self.doc_json.is_some()
+                                    || self.doc_loading
+                                {
+                                    self.doc_json = None;
+                                    self.doc_loading = true;
+                                    let id = self.selected_doc.clone().unwrap_or_default();
+                                    self.load_doc(ctx, &db, &id);
+                                } else {
+                                    self.doc_list.clear();
+                                    self.selected_doc = None;
+                                    self.doc_json = None;
+                                    self.doc_loading = false;
+                                    self.load_docs(ctx, &db);
+                                }
+                            }
+                            if self.command_button(ui, "docs/create", "Create Doc") {
+                                self.new_doc_mode = true;
+                                self.new_doc_id_input.clear();
+                                self.new_doc_json = Some(serde_json::json!({}));
+                                self.selected_doc = None;
+                                self.doc_json = None;
+                                self.doc_loading = false;
+                            }
+                            if self.command_button(ui, "docs/delete_all", "Delete all Docs") {
+                                self.delete_all_open = true;
+                            }
+                            if self.command_button(ui, "docs/purge", "Purge deleted Docs") {
+                                self.purge_deleted_docs(ctx, &db);
+                            }
+                            if self.command_button(ui, "docs/list_all", "List all Docs") {
+                                self.run_db_command(ctx, &db, "_all_docs");
+                            }
+                            if self.command_button(ui, "docs/access_test", "Access Test") {
+                                self.start_access_test(ctx, &db);
+                            }
+                        } else {
+                            ui.label("Select a database first.");
+                            if self.command_button(ui, "docs/back", "Back to Dbs") {
+                                self.set_mode(AppMode::Dbs);
+                            }
+                        }
                     }
-                    if ui.button("List users").clicked() {
-                        self.users_view = true;
-                        self.show_add_user = false;
-                        self.confirm_delete = None;
-                        self.load_users(ctx);
+                    AppMode::Users => {
+                        if self.command_button(ui, "users/list", "List users") {
+                            self.load_users(ctx);
+                        }
+                        if self.command_button(ui, "users/add", "Add new User") {
+                            self.show_add_user = true;
+                            self.editing_user = None;
+                            self.user_name_input.clear();
+                            self.user_password_input.clear();
+                            self.user_roles_input.clear();
+                            self.confirm_delete = None;
+                            self.read_only_public = false;
+                        }
+                        if self.command_button(ui, "users/read_only", "Check read-only users") {
+                            self.check_readonly_users(ctx);
+                        }
                     }
-                    if ui.button("Add new User").clicked() {
-                        self.users_view = true;
-                        self.show_add_user = true;
-                        self.editing_user = None;
-                        self.user_name_input.clear();
-                        self.user_password_input.clear();
-                        self.user_roles_input.clear();
-                        self.confirm_delete = None;
-                        self.read_only_public = false;
-                    }
-                    if ui.button("Save all Designs").clicked() {
-                        self.save_designs(ctx);
-                    }
-                    if ui.button("Save all Docs").clicked() {
-                        self.save_docs(ctx);
-                    }
-                    if ui.button("Purge deleted Docs").clicked() {
-                        self.purge_all_open = true;
-                    }
+                    AppMode::Settings => {
+                        ui.checkbox(&mut self.log_results, "Log API results");
+                        ui.separator();
+                        ui.label("Server configuration is admin-only.");
+                        ui.label("GET /_node/{node}/_config");
                     }
                 }
-
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
             let content_h = ui.available_height().max(120.0);
+
+            if self.mode == AppMode::Server {
+                ui.group(|ui| {
+                    ui.set_min_height(content_h);
+                    ui.set_max_height(content_h);
+                    ui.label(egui::RichText::new("Server").strong().heading());
+                    ui.separator();
+                    let status = if self.connected { "Connected" } else { "Disconnected" };
+                    ui.label(egui::RichText::new(format!("Status: {status}")).strong());
+                    let host = if self.connected_host.is_empty() {
+                        self.host.clone()
+                    } else {
+                        self.connected_host.clone()
+                    };
+                    ui.label(format!("Host: {host}"));
+                    ui.separator();
+                    ui.label("CouchDB server API areas:");
+                    ui.label(egui::RichText::new("/  /_up  /_active_tasks  /_membership").monospace());
+                    ui.label(egui::RichText::new("/_node/{node}/_stats  /_node/{node}/_versions").monospace());
+                    ui.label(egui::RichText::new("/_replicate  /_scheduler/jobs").monospace());
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("Open Dbs").clicked() {
+                            self.set_mode(AppMode::Dbs);
+                        }
+                        if ui.button("Users").clicked() {
+                            self.set_mode(AppMode::Users);
+                            self.load_users(ctx);
+                        }
+                    });
+                });
+                return;
+            }
+
+            if self.mode == AppMode::Settings {
+                ui.group(|ui| {
+                    ui.set_min_height(content_h);
+                    ui.set_max_height(content_h);
+                    ui.label(egui::RichText::new("Settings").strong().heading());
+                    ui.separator();
+                    ui.label(egui::RichText::new("Application").strong());
+                    ui.checkbox(&mut self.log_results, "Log API results");
+                    ui.label("Window size is saved automatically.");
+                    ui.separator();
+                    ui.label(egui::RichText::new("CouchDB server").strong());
+                    ui.label("Server configuration is admin-only.");
+                    ui.label(egui::RichText::new("GET /_node/{node}/_config").monospace());
+                    ui.label(egui::RichText::new("PUT /_node/{node}/_config/{section}/{key}").monospace());
+                    ui.separator();
+                    ui.label("Normal users are stored in _users; server admins are stored in config.");
+                });
+                return;
+            }
 
             ui.group(|ui| {
                 ui.set_min_height(content_h);
@@ -2386,22 +2603,12 @@ impl eframe::App for MyEguiApp {
                     };
                     if self.connected {
                         if ui.link(&server_label).clicked() {
-                            self.users_view = false;
-                            self.show_add_user = false;
-                            self.selected_db = None;
-                            self.doc_filter.clear();
-                            self.doc_list.clear();
-                            self.selected_doc = None;
-                            self.doc_json = None;
-                            self.doc_loading = false;
+                            self.set_mode(AppMode::Server);
                         }
                     } else {
                         ui.label(egui::RichText::new(&server_label).strong());
                     }
-                    if self.users_view {
-                        ui.label(egui::RichText::new("›").weak());
-                        ui.label(egui::RichText::new("Users").strong());
-                    } else if let Some(db) = self.selected_db.clone() {
+                    if let Some(db) = self.selected_db.clone() {
                         let db_label = Self::db_display_label(&db);
                         let doc_mode = self.new_doc_mode
                             || self.selected_doc.is_some()
@@ -2427,24 +2634,27 @@ impl eframe::App for MyEguiApp {
                             ui.label(egui::RichText::new("›").weak());
                             ui.label(egui::RichText::new(id).strong().monospace());
                         }
+                        if self.mode == AppMode::Docs
+                            && !self.new_doc_mode
+                            && self.selected_doc.is_none()
+                            && self.doc_json.is_none()
+                            && !self.doc_loading
+                        {
+                            ui.add_space(16.0);
+                            ui.label("Find:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.doc_filter)
+                                    .hint_text("Filter by document id...")
+                                    .desired_width(260.0),
+                            );
+                            if !self.doc_filter.is_empty() && ui.button("Clear").clicked() {
+                                self.doc_filter.clear();
+                            }
+                        }
                     }
                 });
                 ui.separator();
-                if self.users_view {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Users").strong().heading());
-                        if ui.button("Reload").clicked() {
-                            self.load_users(ctx);
-                        }
-                        if ui.button("Add new User").clicked() {
-                            self.show_add_user = true;
-                            self.editing_user = None;
-                            self.user_name_input.clear();
-                            self.user_password_input.clear();
-                            self.user_roles_input.clear();
-                            self.read_only_public = false;
-                        }
-                    });
+                if self.mode == AppMode::Users {
                     if self.show_add_user {
                         let is_edit = self.editing_user.is_some();
                         let key_color = ui.visuals().hyperlink_color;
@@ -2534,6 +2744,7 @@ impl eframe::App for MyEguiApp {
                         let mut request_delete: Option<String> = None;
                         let mut cancel_delete = false;
                         let mut do_delete: Option<(String, String)> = None;
+                        let mut open_user_db: Option<(String, bool)> = None;
                         let confirm_delete = self.confirm_delete.clone();
                         egui::ScrollArea::both()
                             .id_source("users_scroll")
@@ -2541,13 +2752,14 @@ impl eframe::App for MyEguiApp {
                             .show(ui, |ui| {
                                 egui::Grid::new("users_grid")
                                     .striped(true)
-                                    .num_columns(5)
+                                    .num_columns(6)
                                     .spacing([16.0, 6.0])
                                     .show(ui, |ui| {
                                         ui.strong("User");
                                         ui.strong("Roles");
                                         ui.strong("Per-user DB");
                                         ui.strong("Public R/O");
+                                        ui.strong("Db");
                                         ui.strong("Actions");
                                         ui.end_row();
                                         let yes = egui::RichText::new("yes").color(egui::Color32::from_rgb(110, 210, 110)).strong();
@@ -2561,6 +2773,10 @@ impl eframe::App for MyEguiApp {
                                             });
                                             ui.label(if row.peruser_db_exists { yes.clone() } else { no.clone() });
                                             ui.label(if row.public_readonly { yes.clone() } else { no.clone() });
+                                            if ui.link("db").clicked() {
+                                                let hex: String = row.name.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+                                                open_user_db = Some((format!("userdb-{hex}"), row.peruser_db_exists));
+                                            }
                                             ui.horizontal(|ui| {
                                                 if confirm_delete.as_deref() == Some(row.id.as_str()) {
                                                     ui.label(egui::RichText::new("Delete?").strong());
@@ -2600,6 +2816,22 @@ impl eframe::App for MyEguiApp {
                         if let Some((id, rev)) = do_delete {
                             self.delete_user(ctx, &id, &rev);
                         }
+                        if let Some((db, exists)) = open_user_db {
+                            if exists {
+                                self.database = db.clone();
+                                self.selected_db = Some(db.clone());
+                                self.doc_list.clear();
+                                self.selected_doc = None;
+                                self.doc_json = None;
+                                self.doc_loading = false;
+                                self.doc_filter.clear();
+                                self.set_mode(AppMode::Docs);
+                                self.load_docs(ctx, &db);
+                            } else {
+                                self.log_lines.push_str(&format!("\nNo per-user database found: {db}"));
+                                self.set_mode(AppMode::Dbs);
+                            }
+                        }
                     }
                 } else if let Some(db) = self.selected_db.clone() {
                     if self.new_doc_mode {
@@ -2632,7 +2864,7 @@ impl eframe::App for MyEguiApp {
                             self.new_doc_json = Some(value);
                         }
                     } else if self.doc_loading || self.doc_json.is_some() {
-                        let mut editor_doc = self.doc_json.take();
+                        let editor_doc = self.doc_json.take();
                         ui.horizontal(|ui| {
                             if ui.button("Save").clicked() {
                                 if let Some(d) = editor_doc.clone() {
@@ -2640,13 +2872,6 @@ impl eframe::App for MyEguiApp {
                                     let id = self.selected_doc.clone().unwrap_or_default();
                                     self.save_doc(ctx, &db, &id);
                                 }
-                            }
-                            if ui.button("Reload").clicked() {
-                                self.doc_json = None;
-                                self.doc_loading = true;
-                                let id = self.selected_doc.clone().unwrap_or_default();
-                                self.load_doc(ctx, &db, &id);
-                                editor_doc = None;
                             }
                         });
                         if self.doc_loading {
@@ -2664,24 +2889,6 @@ impl eframe::App for MyEguiApp {
                             self.doc_json = Some(d);
                         }
                     } else {
-                    ui.horizontal(|ui| {
-                        if ui.button("Reload").clicked() {
-                            self.doc_list.clear();
-                            self.selected_doc = None;
-                            self.doc_json = None;
-                            self.doc_loading = false;
-                            self.load_docs(ctx, &db);
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Find:");
-                        ui.add(egui::TextEdit::singleline(&mut self.doc_filter).hint_text("Filter by document id...").desired_width(260.0));
-                        if !self.doc_filter.is_empty() {
-                            if ui.button("Clear").clicked() {
-                            self.doc_filter.clear();
-                            }
-                        }
-                    });
                     if self.doc_list.is_empty() {
                         ui.label("No documents loaded (or still loading)...");
                     } else {
@@ -2782,6 +2989,7 @@ impl eframe::App for MyEguiApp {
                                         self.doc_json = None;
                                         self.doc_loading = false;
                                         self.doc_filter.clear();
+                                        self.set_mode(AppMode::Docs);
                                         self.log_lines.push_str(&format!("\nSelected database: {db}"));
                                         self.load_docs(ctx, &db);
                                     }
@@ -2825,6 +3033,7 @@ impl eframe::App for MyEguiApp {
                                     self.doc_json = None;
                                     self.doc_loading = false;
                                     self.doc_filter.clear();
+                                    self.set_mode(AppMode::Docs);
                                     self.log_lines.push_str(&format!("\nSelected database: {db}"));
                                     self.load_docs(ctx, db);
                                 }
