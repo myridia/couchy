@@ -659,7 +659,7 @@ impl MyEguiApp {
     fn current_connection_config(&self) -> AppConfig {
         ServerConfig {
             name: self.server_name.clone(),
-            host: self.host.clone(),
+            host: cmd::normalize_host(&self.host),
             user: self.user.clone(),
             password: self.password.clone(),
             database: self.database.clone(),
@@ -1404,6 +1404,7 @@ impl MyEguiApp {
         if !host.starts_with("http://") && !host.starts_with("https://") {
             host = format!("https://{host}");
         }
+        self.host = host.clone();
         self.connected = false;
         self.connected_host.clear();
         self.selected_db = None;

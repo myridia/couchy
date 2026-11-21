@@ -32,8 +32,20 @@ pub struct UserRow {
     pub public_readonly: bool,
 }
 
+pub fn normalize_host(host: &str) -> String {
+    let host = host.trim().trim_end_matches('/');
+    if host.is_empty() {
+        return String::new();
+    }
+    if host.starts_with("http://") || host.starts_with("https://") {
+        host.to_string()
+    } else {
+        format!("https://{host}")
+    }
+}
+
 fn base(config: &AppConfig) -> String {
-    config.host.trim_end_matches('/').to_string()
+    normalize_host(&config.host)
 }
 
 fn db_path(db: &str) -> String {
@@ -97,12 +109,9 @@ async fn send_json(
 }
 
 pub async fn connect(config: &AppConfig) -> Result<String, String> {
-    let host = config.host.trim().to_string();
+    let host = normalize_host(&config.host);
     if host.is_empty() {
         return Err("Host is empty.".to_string());
-    }
-    if !host.starts_with("http://") && !host.starts_with("https://") {
-        return Err(format!("Host '{host}' has no scheme (expected http(s)://...)."));
     }
     let db = config.database.trim().to_string();
     if !db.is_empty() {
@@ -127,7 +136,10 @@ pub async fn connect(config: &AppConfig) -> Result<String, String> {
 }
 
 pub async fn list_db_names(config: &AppConfig) -> Result<Vec<String>, String> {
-    let host = config.host.trim().to_string();
+    let host = normalize_host(&config.host);
+    if host.is_empty() {
+        return Err("Host is empty.".to_string());
+    }
     let client = couch_rs::Client::new(&host, &config.user, &config.password).map_err(|e| e.to_string())?;
     client.list_dbs().await.map_err(|e| e.to_string())
 }
@@ -140,21 +152,38 @@ pub async fn get_dbs_info(config: &AppConfig) -> Result<Value, String> {
     let req = auth(
         http.post(&url)
             .header("Content-Type", "application/json")
-            .json(&serde_json::json!({ "keys": dbs })),
+            .json(&serde_json::json!({ "keys": dbs.clone() })),
         &config.user,
         &config.password,
     );
-    match req.send().await {
-        Ok(resp) => {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
-            match serde_json::from_str::<Value>(&body) {
-                Ok(v) => Ok(v),
-                Err(e) => Err(format!("Failed to parse /_dbs_info response: {e} [{status}]")),
+    if let Ok(resp) = req.send().await {
+        let status = resp.status().as_u16();
+        let body = resp.text().await.unwrap_or_default();
+        if (200..300).contains(&status) {
+            if let Ok(v) = serde_json::from_str::<Value>(&body) {
+                if v.get("error").is_none() {
+                    return Ok(v);
+                }
             }
         }
-        Err(e) => Err(format!("POST /_dbs_info failed: {e}")),
     }
+
+    let mut rows = Vec::new();
+    for db in dbs {
+        let (status, parsed, body) = get_json(
+            &http,
+            &b,
+            &config.user,
+            &config.password,
+            &format!("/{}", db_path(&db)),
+        )
+        .await;
+        if (200..300).contains(&status) {
+            let info = parsed.unwrap_or_else(|| Value::String(body));
+            rows.push(serde_json::json!({ "key": db, "info": info }));
+        }
+    }
+    Ok(Value::Array(rows))
 }
 
 pub fn parse_db_infos(data: &Value) -> Vec<DbInfoRow> {
