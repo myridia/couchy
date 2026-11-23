@@ -11,7 +11,6 @@ permissions:
 
 jobs:
   build:
-    if: github.repository_owner == 'veto8'
     runs-on: ubuntu-22.04
     steps:
       - name: Dependencies
@@ -34,7 +33,6 @@ jobs:
           tree
 
       - name: Release
-        if: github.repository_owner == 'veto8'
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
