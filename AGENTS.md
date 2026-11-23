@@ -42,7 +42,7 @@ cargo build --release
 
 ## Window
 - Default inner size is 1400 × 900.
-- Window icon uses `pages/img/icon_512x512.png` as 32×32 RGBA.
+- Window icon uses `couchy.svg` as 32×32 RGBA on black.
 - Resized window size is persisted and restored by eframe.
 - Connection bar uses two rows: Name/Host, then User/Pass/DB/actions.
 - Left panel is labeled Connections.
