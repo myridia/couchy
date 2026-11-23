@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Couchy — CouchDB data tool</title>
+  <meta name="description" content="Couchy is a Rust CLI and GUI utility for getting and updating CouchDB data.">
+  <link rel="icon" href="favicon.ico">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="./">
+      <img src="logo.png" alt="" width="36" height="36">
+      <span>Couchy</span>
+    </a>
+    <nav>
+      <a href="#features">Features</a>
+      <a href="#start">Quick start</a>
+      <a href="https://github.com/veto8/couchy">GitHub</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero">
+      <img class="hero-icon" src="icon_512x512.png" alt="Couchy icon" width="132" height="132">
+      <div class="hero-copy">
+        <p class="eyebrow">Convenient Utility to get and update CouchDB data</p>
+        <h1>Couchy</h1>
+        <p class="lead">
+          Browse, back up and clean CouchDB data from a desktop GUI — or run the same
+          tool headless from the command line.
+        </p>
+        <div class="actions">
+          <a class="button primary" href="https://github.com/veto8/couchy/releases/latest">Download latest</a>
+          <a class="button" href="https://github.com/veto8/couchy">View source</a>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="features">
+      <h2>What it does</h2>
+      <div class="cards">
+        <article>
+          <h3>Server &amp; databases</h3>
+          <p>Connect to a CouchDB server, list databases right away, load DB info on demand and check public access.</p>
+        </article>
+        <article>
+          <h3>Documents &amp; users</h3>
+          <p>Work with large Users, Documents and Dbs Info lists in virtualized grids instead of slow scrolling tables.</p>
+        </article>
+        <article>
+          <h3>Maintenance</h3>
+          <p>Save design documents, delete orphaned replica documents and migrate MySQL data into CouchDB.</p>
+        </article>
+        <article>
+          <h3>Log panel</h3>
+          <p>Copy, paste, clear and save the session log from the header buttons or the File and Edit menus.</p>
+        </article>
+        <article>
+          <h3>GUI or CLI</h3>
+          <p>The egui window opens by default. Add <code>--nox 1</code> to run headless from a shell or cron job.</p>
+        </article>
+        <article>
+          <h3>Rust &amp; portable</h3>
+          <p>Built with Rust, eframe/egui and couch_rs, with release builds for Linux, Windows, macOS and FreeBSD.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section" id="start">
+      <h2>Quick start</h2>
+      <pre><code>cargo build --release
+./run.sh              # GUI
+cargo run -- --nox 1  # CLI</code></pre>
+      <p>
+        The binary is at <code>target/release/couchy</code>. On first run, Couchy reads
+        <code>~/config.toml</code> for the CouchDB and MySQL connections.
+      </p>
+      <p class="hint">
+        Full usage and command list: <a href="https://github.com/veto8/couchy/blob/main/HOWITWORKS.md">HOWITWORKS.md</a>
+      </p>
+    </section>
+  </main>
+
+  <footer>
+    Couchy · <a href="https://github.com/veto8/couchy">veto8/couchy</a>
+  </footer>
+</body>
+</html>
