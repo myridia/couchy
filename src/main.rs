@@ -1,3 +1,5 @@
+mod icon;
+
 use clap::Parser;
 use couchy::commands as cmd;
 use couchy::commands::{AccessTestResult, DbInfoRow, UserRow};
@@ -34,8 +36,15 @@ async fn main() {
     let args = Args::parse();
 
     if args.nox != 1 {
+        let icon_data = egui::IconData {
+            rgba: icon::get_icon(),
+            width: 32,
+            height: 32,
+        };
         let native_options = eframe::NativeOptions {
-            viewport: egui::ViewportBuilder::default().with_inner_size([1400.0, 900.0]),
+            viewport: egui::ViewportBuilder::default()
+                .with_inner_size([1400.0, 900.0])
+                .with_icon(icon_data),
             persist_window: true,
             ..Default::default()
         };
