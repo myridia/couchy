@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   deploy:
-    if: github.repository_owner == 'myridia'
+    if: github.repository_owner == 'veto8'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

@@ -12,7 +12,7 @@ permissions:
 jobs:
   Build:
     runs-on: macos-15
-    if: github.repository_owner == 'myridia'
+    if: github.repository_owner == 'veto8'
 
     steps:
       - name: Install Rust

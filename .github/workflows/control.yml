@@ -9,23 +9,26 @@ on:
       target:
         description: "What to build"
         required: true
-        #default: all
-        #type: choice
-        #options:
-          #- all
-          #- linux
-          #- debian
-          #- windows
-          #- macos
-          #- macos_intel          
-          #- msix
-          #- freebsd
+        default: all
+        type: choice
+        options:
+          - all
+          - linux
+          - debian
+          - windows
+          - macos
+          - macos_intel
+          - freebsd
+          - msix
+          - pages
 
 permissions:
   contents: write
   pull-requests: write
   issues: read
   packages: none
+  pages: write
+  id-token: write
 
 jobs:
   linux:
@@ -62,4 +65,9 @@ jobs:
     needs: [windows]
     if: always() && (github.event_name == 'push' || inputs.target == 'all' || inputs.target == 'msix')
     uses: ./.github/workflows/msix.yml
+    secrets: inherit
+
+  pages:
+    if: github.event_name == 'push' || inputs.target == 'all' || inputs.target == 'pages'
+    uses: ./.github/workflows/pages.yml
     secrets: inherit

@@ -12,7 +12,7 @@ permissions:
 jobs:
   Build:
     runs-on: ubuntu-22.04
-    if: github.repository_owner == 'myridia'
+    if: github.repository_owner == 'veto8'
 
     steps:
       - name: Install
