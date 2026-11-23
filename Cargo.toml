@@ -6,7 +6,8 @@ edition = "2024"
 [dependencies]
 # https://docs.rs/eframe/latest/eframe/
 eframe = {version= "0.28.1",features = ["wgpu", "persistence"]}
-egui_extras = "0.28.1"
+egui_extras = { version = "0.28.1", features = ["image"] }
+image = { version = "0.25", default-features = false, features = ["ico", "png"] }
 #wgpu = { version = "*", features = ["webgpu", "webgl"] }
 
 # https://docs.rs/clap/latest/clap/

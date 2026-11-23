@@ -22,7 +22,6 @@ cargo build --release
 
 ## Structure
 - `src/main.rs` — entry point, GUI + CLI dispatch
-- `src/icon.rs` — 32×32 RGBA window icon data
 - `src/config.rs` — config loading, CLI args
 - `src/lib.rs` — library root
 - `src/view.rs` — CouchDB view operations
@@ -42,7 +41,8 @@ cargo build --release
 
 ## Window
 - Default inner size is 1400 × 900.
-- Window icon uses `couchy.svg` as 32×32 RGBA on black.
+- Window icon uses `pages/img/icon_192x192.ico` decoded to RGBA.
+- Help and About dialogs show a 128×128 icon from `pages/img/icon_512x512.png`.
 - Resized window size is persisted and restored by eframe.
 - Connection bar uses two rows: Name/Host, then User/Pass/DB/actions.
 - Left panel is labeled Connections.

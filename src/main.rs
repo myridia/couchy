@@ -1,5 +1,3 @@
-mod icon;
-
 use clap::Parser;
 use couchy::commands as cmd;
 use couchy::commands::{AccessTestResult, DbInfoRow, UserRow};
@@ -36,10 +34,14 @@ async fn main() {
     let args = Args::parse();
 
     if args.nox != 1 {
+        let icon_image = image::load_from_memory(include_bytes!("../pages/img/icon_192x192.ico"))
+            .expect("valid ICO icon")
+            .into_rgba8();
+        let (icon_width, icon_height) = icon_image.dimensions();
         let icon_data = egui::IconData {
-            rgba: icon::get_icon(),
-            width: 32,
-            height: 32,
+            rgba: icon_image.into_raw(),
+            width: icon_width,
+            height: icon_height,
         };
         let native_options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
@@ -641,6 +643,7 @@ impl Default for MyEguiApp {
 
 impl MyEguiApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        egui_extras::install_image_loaders(&cc.egui_ctx);
         let mut style = (*cc.egui_ctx.style()).clone();
         style.text_styles.insert(
             egui::TextStyle::Small,
@@ -2085,9 +2088,20 @@ impl eframe::App for MyEguiApp {
             egui::Window::new("Help")
                 .open(&mut self.window_help_open)
                 .show(ctx, |ui| {
-                    ui.label("Use the top bar to enter CouchDB connection details (Host, User, Password, Database).");
-                    ui.label("Manage saved servers in the left panel (select, add/update, delete).");
-                    ui.label("Settings > Log API results: also write full API responses to the log.");
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::Image::from_bytes(
+                                "bytes://couchy_icon.png",
+                                include_bytes!("../pages/img/icon_512x512.png"),
+                            )
+                            .fit_to_exact_size(egui::vec2(128.0, 128.0)),
+                        );
+                        ui.vertical(|ui| {
+                            ui.label("Use the top bar to enter CouchDB connection details (Host, User, Password, Database).");
+                            ui.label("Manage saved servers in the left panel (select, add/update, delete).");
+                            ui.label("Settings > Log API results: also write full API responses to the log.");
+                        });
+                    });
                 });
         }
 
@@ -2095,8 +2109,19 @@ impl eframe::App for MyEguiApp {
             egui::Window::new("About")
                 .open(&mut self.window_about_open)
                 .show(ctx, |ui| {
-                    ui.label("Couchy");
-                    ui.label("Convenient utility to get and update CouchDB data.");
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::Image::from_bytes(
+                                "bytes://couchy_icon.png",
+                                include_bytes!("../pages/img/icon_512x512.png"),
+                            )
+                            .fit_to_exact_size(egui::vec2(128.0, 128.0)),
+                        );
+                        ui.vertical(|ui| {
+                            ui.heading("Couchy");
+                            ui.label("Convenient utility to get and update CouchDB data.");
+                        });
+                    });
                 });
         }
 
