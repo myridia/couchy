@@ -16,10 +16,10 @@ permissions:
 
 jobs:
   linux:      { if: github.repository_owner == 'myridia', uses: ./.github/workflows/linux.yml, secrets: inherit }
-  debian:     { if: github.repository_owner == 'myridia', uses: ./.github/workflows/debian.yml, secrets: inherit }
-  # windows:    { if: github.repository_owner == 'myridia', uses: ./.github/workflows/windows.yml, secrets: inherit }
-  # macos:      { if: github.repository_owner == 'myridia', uses: ./.github/workflows/macos.yml, secrets: inherit }
-  # macos_intel: { if: github.repository_owner == 'myridia', uses: ./.github/workflows/macos_intel.yml, secrets: inherit }
-  # freebsd:    { if: github.repository_owner == 'myridia', uses: ./.github/workflows/freebsd.yml, secrets: inherit }
-  # msix:       { if: github.repository_owner == 'myridia', uses: ./.github/workflows/msix.yml, secrets: inherit }
+  #debian:     { if: github.repository_owner == 'myridia', uses: ./.github/workflows/debian.yml, secrets: inherit }
+  windows:    { if: github.repository_owner == 'myridia', uses: ./.github/workflows/windows.yml, secrets: inherit }
+  macos:      { if: github.repository_owner == 'myridia', uses: ./.github/workflows/macos.yml, secrets: inherit }
+  macos_intel: { if: github.repository_owner == 'myridia', uses: ./.github/workflows/macos_intel.yml, secrets: inherit }
+  freebsd:    { if: github.repository_owner == 'myridia', uses: ./.github/workflows/freebsd.yml, secrets: inherit }
+  msix:       { if: github.repository_owner == 'myridia', uses: ./.github/workflows/msix.yml, secrets: inherit }
   pages:        { if: github.repository_owner == 'myridia', uses: ./.github/workflows/pages.yml, secrets: inherit }
