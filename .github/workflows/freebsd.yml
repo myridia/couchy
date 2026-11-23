@@ -1,14 +1,11 @@
-name: Build FreeBSD Release
-
+name: FreeBSD
 on:
-  push:
-    branches: ["main"]
-    tags:
-      - '*'
-
-  # Allows you to run this workflow manually from the Actions tab
+  # workflow_run:
+  #   workflows: ["Linux"]
+  #   types:
+  #     - completed
   workflow_dispatch:
-
+  workflow_call:
 permissions:
   contents: write
   pull-requests: write 
@@ -17,6 +14,7 @@ permissions:
 
 jobs:
   build_freebsd:
+    if: github.repository_owner == 'myridia'
     runs-on: ubuntu-22.04
     name: A job to run FreeBSD
     env:
@@ -32,21 +30,23 @@ jobs:
         usesh: true
         prepare: |
           pkg install -y curl 
+          pkg install -y cmake 
           
-        name: install rustup in freebsd
         run: |
           curl https://sh.rustup.rs -sSf | sh -s -- -y
           . "$HOME/.cargo/env"
           rustup target list
-          cargo build --target x86_64-unknown-freebsd --release 
+          cargo build --release --target x86_64-unknown-freebsd
           ls target/x86_64-unknown-freebsd/release
           cp target/x86_64-unknown-freebsd/release/couchy target/x86_64-unknown-freebsd/release/couchy_freebsd
+          #ls target/x86_64-unknown-freebsd/release -all
 
+          
     - name: Upload freeBSD Binary to release
       uses: svenstaro/upload-release-action@v2
       with:
         repo_token: ${{ secrets.GITHUB_TOKEN }}
-        file: 'target/x86_64-unknown-freebsd/release/couchy_freebsd'
+        file: target/x86_64-unknown-freebsd/release/couchy_freebsd
         tag: ${{ github.ref }}
         overwrite: true
         file_glob: true

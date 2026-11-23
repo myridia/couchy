@@ -1,0 +1,65 @@
+name: Windows
+on:
+  # push:
+  #   branches: ["main"]
+  #   tags:
+  #     - '*'
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: write
+  pull-requests: write 
+  issues: read
+  packages: none
+
+jobs:
+  Build:
+    runs-on: windows-latest
+    if: github.repository_owner == 'myridia'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+          
+      - name: Install Rust          
+        uses: actions-rs/toolchain@v1 
+        with:
+          toolchain: nightly 
+          target: x86_64-pc-windows-gnu 
+
+      - name: Build
+        run: |
+          cargo build --release --target x86_64-pc-windows-gnu 
+          cd target/x86_64-pc-windows-gnu/release/
+          dir 
+           
+      - name: Release
+        if: github.repository_owner == 'myridia'                  
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: 'target/x86_64-pc-windows-gnu/release/couchy.exe'
+          tag: ${{ github.ref }}
+          overwrite: true
+          file_glob: true
+
+
+
+          
+
+          
+
+
+    
+   
+
+
+        
+
+
+        
+
+
+ 
+     

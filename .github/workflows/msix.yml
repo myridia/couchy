@@ -1,0 +1,124 @@
+name: Msix
+on:
+  # push:
+  #   branches: ["main"]
+  #   tags:
+  #     - '*'
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: write
+  pull-requests: write 
+  issues: read
+  packages: none
+  
+jobs:
+  build-msix:
+    runs-on: windows-latest 
+    if: github.repository_owner == 'myridia'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Dependencies
+        run: |
+           # winget install --id Microsoft.MSIXPackagingTool -e --accept-source-agreements --accept-package-agreements --silent
+           winget install microsoft.winappcli --source winget 
+
+      - name: Download_exe 
+        run: |
+         curl -L "https://github.com/myridia/couchy/releases/download/main/couchy.exe" -o "./couchy.exe"
+         
+      - name: Certificate 
+        run: |
+          # $folder = "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\"
+          # $currentPath = $env:Path
+          # $env:Path = "$folder;$currentPath"
+          $pass = ConvertTo-SecureString "passpass" -AsPlainText -Force
+          $loc = "Cert:\CurrentUser\My"
+          # $cert = New-SelfSignedCertificate -Subject "CN=Myridia" -CertStoreLocation $loc -KeyExportPolicy Exportable -KeyUsage DigitalSignature -FriendlyName "Myridia Certificate"
+            $cert = New-SelfSignedCertificate -Subject "CN=Myridia" -CertStoreLocation $loc -KeyExportPolicy Exportable -KeyUsage CertSign,CrlSign -FriendlyName "Myridia Root CA"
+          if ($cert) {
+            $certp = "Cert:\CurrentUser\My\$($cert.Thumbprint)"
+            Export-PfxCertificate  -cert $certp  -FilePath ".\Myridia.pfx" -Password $pass -Force
+            Export-Certificate -Cert "Cert:\CurrentUser\My\$($cert.Thumbprint)" -FilePath ".\Myridia.cer" -Force 
+            certutil -addstore Root ".\Myridia.cer"
+
+          } else {
+            Write-Error "Certificate generation failed."
+          }
+
+          $caCert = Get-ChildItem -Path $loc | Where-Object { $_.Subject -eq "CN=Myridia" }
+          $cert = New-SelfSignedCertificate  -Signer $caCert -Subject "CN=Couchy" -CertStoreLocation $loc -KeyExportPolicy Exportable -KeyUsage DigitalSignature -FriendlyName "Couchy Certificate" -Type CodeSigningCert
+          if ($cert) {
+            $certp = "Cert:\CurrentUser\My\$($cert.Thumbprint)"
+            Export-PfxCertificate  -cert $certp  -FilePath ".\Couchy.pfx" -Password $pass -Force
+            Export-Certificate -Cert "Cert:\CurrentUser\My\$($cert.Thumbprint)" -FilePath ".\Couchy.cer" -Force 
+            certutil -addstore Root ".\Myridia.cer"
+          } else {
+            Write-Error "Certificate generation failed."  
+          }
+
+      - name: Sign  
+        run: |
+          dir
+          $cert2 = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(".\Couchy.pfx", "passpass")
+          Set-AuthenticodeSignature -FilePath ".\couchy.exe" -Certificate $cert2
+          
+      - name: Packing  
+        run: |    
+          # msixpw package --applicationFile "couchy.exe"  --fileType "EXE"  --packageName "Couchy"  --packageVersion "1.0.0"  --publisher "CN=Couchy"  --publisherDisplayName "Couchy" --outDir ".\AppPackages"  --sign  --certificatePath "Couchy.pfx"  --password "passpass"  --targetPlatforms "x64"   
+          # MsixPackagingTool.exe create-package --template template.xml
+          # winapp manifest generate
+          # cat Package.appxmanifest 
+          # winapp pack . --cert Couchy.pfx
+          dir 
+          mkdir app 
+          cp couchy.exe app\
+          cd app 
+          winapp manifest generate --executable .\couchy.exe  --package-name "Couchy" --publisher-name "Couchy"
+          winapp pack . --cert "..\Couchy.pfx" --cert-password "passpass" --output "couchy.msix" --name "Couchy"
+          dir 
+       
+      - name: Release
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: |
+            app/couchy.msix  
+          tag: ${{ github.ref }}
+          overwrite: true
+          file_glob: true
+
+      - name: Release_cert
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: |
+            Myridia.cer
+          tag: ${{ github.ref }}
+          overwrite: true
+          file_glob: true
+
+      - name: Release_cert2
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: |
+            Couchy.cer
+          tag: ${{ github.ref }}
+          overwrite: true
+          file_glob: true
+
+      - name: Release_cert3
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: |
+            Couchy.pfx
+          tag: ${{ github.ref }}
+          overwrite: true
+          file_glob: true
+ 

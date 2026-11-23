@@ -1,0 +1,64 @@
+name: Linux
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: write
+  pull-requests: write 
+  issues: read
+  packages: none
+
+jobs:
+  Build:
+    runs-on: ubuntu-22.04
+    if: github.repository_owner == 'myridia'
+
+    steps:
+      - name: Install
+        run: |
+         sudo apt-get update -y          
+         curl https://sh.rustup.rs -sSf | sh -s -- -y
+         source $HOME/.cargo/env
+         cargo --version
+         
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile
+        run: |
+          source $HOME/.cargo/env          
+          cargo build --release 
+ 
+          
+      - name: Rename 
+        run: |
+          cp target/release/couchy target/release/couchy_linux
+
+      - name: Release
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: 'target/release/couchy_linux'
+          tag: ${{ github.ref }}
+          overwrite: true
+          file_glob: true
+
+
+
+
+          
+
+
+    
+   
+
+
+        
+
+
+        
+
+
+ 
+     

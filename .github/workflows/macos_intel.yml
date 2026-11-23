@@ -1,0 +1,57 @@
+name: Macos_intel
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: write
+  pull-requests: write 
+  issues: read
+  packages: none
+
+jobs:
+  Build:
+    runs-on: macos-15-intel
+    if: github.repository_owner == 'myridia'
+
+    steps:
+      - name: Install Rust
+        run: |
+          brew install tree
+          curl https://sh.rustup.rs -sSf | sh -s -- -y
+          source $HOME/.cargo/env
+          rustup toolchain install 1.94.1
+          rustup default 1.94.1
+          rustup component add llvm-tools-preview
+          cargo --version 
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile 
+        run: |
+          source $HOME/.cargo/env
+          cargo build --release  
+      - name: List
+        run: |
+          cd target
+          tree . 
+      - name: Rename
+        run: |
+          cp target/release/couchy couchy_macos_intel.app
+          hdiutil create -volname "couchy_macos" -srcfolder "couchy_macos_intel.app" -ov -format UDZO "couchy_macos_intel.dmg"
+
+
+
+      - name: Release
+        if: github.repository_owner == 'myridia'
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: 'couchy_macos_intel.dmg'
+          tag: ${{ github.ref }}
+          overwrite: true
+          file_glob: true 
+
+    
+          

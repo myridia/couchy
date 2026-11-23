@@ -1,0 +1,44 @@
+name: Debian
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: read
+  packages: none
+
+jobs:
+  build:
+    if: github.repository_owner == 'myridia'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y build-essential debhelper dh-make fakeroot tree pkg-config libgtk-3-dev libxkbcommon-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libssl-dev libclang-dev
+          curl https://sh.rustup.rs -sSf | sh -s -- -y
+          source $HOME/.cargo/env
+          cargo --version
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          source $HOME/.cargo/env
+          cd make_deb/src
+          dpkg-buildpackage -us -uc -b
+          cd ../../
+          tree
+
+      - name: Release
+        if: github.repository_owner == 'myridia'
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: 'make_deb/couchy_0.1.0-1_amd64.deb'
+          tag: ${{ github.ref }}
+          overwrite: true
+          file_glob: true
