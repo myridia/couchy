@@ -25,6 +25,10 @@ cargo build --release
 - `src/config.rs` — config loading, CLI args
 - `src/lib.rs` — library root
 - `src/view.rs` — CouchDB view operations
+- `make_deb/src/` — Debian packaging source; `Cargo.toml`, `src`, `pages` and `.cargo`
+  are symlinks to the repo root, so include_bytes assets resolve during the build.
+  `debian/rules` sets `CARGO_TARGET_DIR` to its own `target/` and `debian/install`
+  installs `target/release/couchy` into `/usr/bin`. Copied from `github/ct`.
 
 ## Modes
 - AppMode: Server / Dbs / Docs / Users / Settings.
