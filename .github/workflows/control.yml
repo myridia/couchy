@@ -9,11 +9,11 @@ on:
       target:
         description: "What to build"
         required: true
-        default: all
-        type: choice
-        options:
+        #default: all
+        #type: choice
+        #options:
           #- all
-          - linux
+          #- linux
           #- debian
           #- windows
           #- macos
