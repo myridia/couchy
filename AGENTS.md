@@ -54,11 +54,11 @@ cargo build --release
 - "Check public access" runs the per-database public check separately.
 
 ## Workflows
-- `.github/workflows/control.yml` is the single entry point. Push/tag triggers are
-  commented out; only the **Run workflow** button starts it.
+- `.github/workflows/control.yml` is the single entry point. It runs on pushes to
+  `main`, any tag, and the **Run workflow** button.
 - The `jobs:` block is a one-line-per-build list. All eight builds are listed; comment
   out a line with `#` to disable it, remove the `#` to enable it. Currently enabled:
-  `msix`, `pages`.
+  `pages` only.
 - Every leaf workflow is `workflow_call` + `workflow_dispatch` only and is gated by
   `github.repository_owner == 'veto8'` (matching `origin`). `control.yml` grants
   `pages: write` / `id-token: write` so the `pages` target can deploy.
