@@ -12,7 +12,6 @@ permissions:
 jobs:
   Build:
     runs-on: macos-15-intel
-    if: github.repository_owner == 'veto8'
 
     steps:
       - name: Install Rust
@@ -44,7 +43,6 @@ jobs:
 
 
       - name: Release
-        if: github.repository_owner == 'veto8'
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
