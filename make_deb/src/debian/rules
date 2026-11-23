@@ -1,0 +1,15 @@
+#!/usr/bin/make -f
+
+export CARGO_TARGET_DIR = $(CURDIR)/target
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+
+override_dh_auto_build:
+	cargo build --release --workspace
+
+override_dh_auto_test:
+
+override_dh_auto_install:
