@@ -14,12 +14,12 @@ on:
         options:
           - all
           - linux
-          - debian
-          - windows
-          - macos
-          - macos_intel          
-          - msix
-          - freebsd
+          #- debian
+          #- windows
+          #- macos
+          #- macos_intel          
+          #- msix
+          #- freebsd
 
 permissions:
   contents: write
