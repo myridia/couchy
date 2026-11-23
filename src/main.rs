@@ -5,6 +5,7 @@ use couchy::config::{get_config, save_config, AppConfig, Args, ServerConfig};
 use couchy::mysql::*;
 use couchy::view::*;
 use eframe::egui;
+use egui_extras::{Column, TableBuilder};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -561,6 +562,8 @@ struct MyEguiApp {
     access_test_running: bool,
     access_test_db: String,
     access_test_results: Vec<AccessTestRow>,
+    server_test_running: bool,
+    server_test_result: Option<(bool, String)>,
 }
 
 impl Default for MyEguiApp {
@@ -617,6 +620,8 @@ impl Default for MyEguiApp {
             access_test_running: false,
             access_test_db: String::new(),
             access_test_results: Vec::new(),
+            server_test_running: false,
+            server_test_result: None,
         };
         if !app.servers.is_empty() {
             app.select_server(0);
@@ -814,6 +819,42 @@ impl MyEguiApp {
                     send(format!("PROBE_ERR|Cannot reach {host} with https or http - server entry not saved."));
                 }
             }
+        });
+    }
+
+    fn test_connection(&mut self, ctx: &egui::Context) {
+        let cfg = self.current_connection_config();
+        let db = cfg.database.trim();
+        let test_path = if db.is_empty() {
+            "/_all_dbs".to_string()
+        } else {
+            format!("/{}", db.replace('/', "%2F"))
+        };
+        self.log_lines.push_str(&format!(
+            "\n{}",
+            Self::curl_command(&cfg.host, &cfg.user, &cfg.password, "GET", &test_path, None)
+        ));
+        self.server_test_running = true;
+        self.server_test_result = None;
+        let pending = self.pending_log.clone();
+        let ctx2 = ctx.clone();
+        tokio::spawn(async move {
+            let outcome = match tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                cmd::connect(&cfg),
+            )
+            .await
+            {
+                Ok(Ok(msg)) => (true, msg),
+                Ok(Err(e)) => (false, e),
+                Err(_) => (false, format!("Connection timed out after 10 seconds: {}", cfg.host)),
+            };
+            let payload = serde_json::json!({ "ok": outcome.0, "detail": outcome.1 });
+            let msg = format!("SERVER_TEST|{payload}");
+            if let Ok(mut p) = pending.lock() {
+                p.push(msg);
+            }
+            ctx2.request_repaint();
         });
     }
 
@@ -1723,6 +1764,24 @@ impl eframe::App for MyEguiApp {
                         self.show_add_user = false;
                         self.log_lines.push('\n');
                         self.log_lines.push_str(m);
+                    } else if let Some(rest) = msg.strip_prefix("SERVER_TEST|") {
+                        if let Ok(env) = serde_json::from_str::<serde_json::Value>(rest) {
+                            let ok = env.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+                            let detail = env
+                                .get("detail")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            self.server_test_running = false;
+                            self.server_test_result = Some((ok, detail.clone()));
+                            self.log_lines.push('\n');
+                            self.log_lines.push_str(if ok {
+                                "Connection test OK: "
+                            } else {
+                                "Connection test FAILED: "
+                            });
+                            self.log_lines.push_str(&detail);
+                        }
                     } else if let Some(rest) = msg.strip_prefix("DB_LIST|") {
                         if let Some((json, m)) = rest.split_once('|') {
                             if let Ok(dbs) = serde_json::from_str::<Vec<String>>(json) {
@@ -2313,6 +2372,21 @@ impl eframe::App for MyEguiApp {
                     if ui.button("Connect").clicked() {
                         self.quick_connect(ctx);
                     }
+                    if ui.add_enabled(!self.server_test_running, egui::Button::new("Test")).clicked() {
+                        self.test_connection(ctx);
+                    }
+                    if self.server_test_running {
+                        ui.label(egui::RichText::new("Testing...").small().weak());
+                    } else if let Some((ok, detail)) = &self.server_test_result {
+                        let (text, color) = if *ok {
+                            ("OK", egui::Color32::from_rgb(110, 210, 110))
+                        } else {
+                            ("FAILED", egui::Color32::from_rgb(230, 90, 90))
+                        };
+                        ui.label(egui::RichText::new(text).color(color).strong().small());
+                        let short: String = detail.chars().take(80).collect();
+                        ui.label(egui::RichText::new(short).small().weak());
+                    }
                     if ui.button("Add/Update Server").clicked() {
                         self.add_or_update_server(ctx);
                     }
@@ -2746,59 +2820,85 @@ impl eframe::App for MyEguiApp {
                         let mut do_delete: Option<(String, String)> = None;
                         let mut open_user_db: Option<(String, bool)> = None;
                         let confirm_delete = self.confirm_delete.clone();
-                        egui::ScrollArea::both()
-                            .id_source("users_scroll")
-                            .auto_shrink([false, false])
-                            .show(ui, |ui| {
-                                egui::Grid::new("users_grid")
-                                    .striped(true)
-                                    .num_columns(6)
-                                    .spacing([16.0, 6.0])
-                                    .show(ui, |ui| {
+                        ui.push_id("users_table", |ui| {
+                            let yes = egui::RichText::new("yes").color(egui::Color32::from_rgb(110, 210, 110)).strong();
+                            let no = egui::RichText::new("no").color(egui::Color32::from_gray(150));
+                            TableBuilder::new(ui)
+                                .striped(true)
+                                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                                .auto_shrink([false, false])
+                                .column(Column::auto_with_initial_suggestion(160.0).at_least(120.0))
+                                .column(Column::auto_with_initial_suggestion(220.0).at_least(140.0))
+                                .column(Column::exact(100.0))
+                                .column(Column::exact(100.0))
+                                .column(Column::exact(50.0))
+                                .column(Column::exact(190.0))
+                                .header(22.0, |mut header| {
+                                    header.col(|ui| {
                                         ui.strong("User");
+                                    });
+                                    header.col(|ui| {
                                         ui.strong("Roles");
+                                    });
+                                    header.col(|ui| {
                                         ui.strong("Per-user DB");
+                                    });
+                                    header.col(|ui| {
                                         ui.strong("Public R/O");
+                                    });
+                                    header.col(|ui| {
                                         ui.strong("Db");
+                                    });
+                                    header.col(|ui| {
                                         ui.strong("Actions");
-                                        ui.end_row();
-                                        let yes = egui::RichText::new("yes").color(egui::Color32::from_rgb(110, 210, 110)).strong();
-                                        let no = egui::RichText::new("no").color(egui::Color32::from_gray(150));
-                                        for row in &self.users {
-                                            ui.label(egui::RichText::new(&row.name).monospace().strong());
-                                            ui.label(if row.roles.is_empty() {
+                                    });
+                                })
+                                .body(|body| {
+                                    body.rows(26.0, self.users.len(), |mut row| {
+                                        let user = &self.users[row.index()];
+                                        row.col(|ui| {
+                                            ui.label(egui::RichText::new(&user.name).monospace().strong());
+                                        });
+                                        row.col(|ui| {
+                                            ui.label(if user.roles.is_empty() {
                                                 "-".to_string()
                                             } else {
-                                                row.roles.clone()
+                                                user.roles.clone()
                                             });
-                                            ui.label(if row.peruser_db_exists { yes.clone() } else { no.clone() });
-                                            ui.label(if row.public_readonly { yes.clone() } else { no.clone() });
+                                        });
+                                        row.col(|ui| {
+                                            ui.label(if user.peruser_db_exists { yes.clone() } else { no.clone() });
+                                        });
+                                        row.col(|ui| {
+                                            ui.label(if user.public_readonly { yes.clone() } else { no.clone() });
+                                        });
+                                        row.col(|ui| {
                                             if ui.link("db").clicked() {
-                                                let hex: String = row.name.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
-                                                open_user_db = Some((format!("userdb-{hex}"), row.peruser_db_exists));
+                                                let hex: String = user.name.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+                                                open_user_db = Some((format!("userdb-{hex}"), user.peruser_db_exists));
                                             }
-                                            ui.horizontal(|ui| {
-                                                if confirm_delete.as_deref() == Some(row.id.as_str()) {
-                                                    ui.label(egui::RichText::new("Delete?").strong());
-                                                    if ui.button("Yes").clicked() {
-                                                        do_delete = Some((row.id.clone(), row.rev.clone()));
-                                                    }
-                                                    if ui.button("No").clicked() {
-                                                        cancel_delete = true;
-                                                    }
-                                                } else {
-                                                    if ui.button("Edit").clicked() {
-                                                        edit_user = Some(row.clone());
-                                                    }
-                                                    if ui.button("Delete").clicked() {
-                                                        request_delete = Some(row.id.clone());
-                                                    }
+                                        });
+                                        row.col(|ui| {
+                                            if confirm_delete.as_deref() == Some(user.id.as_str()) {
+                                                ui.label(egui::RichText::new("Delete?").strong());
+                                                if ui.button("Yes").clicked() {
+                                                    do_delete = Some((user.id.clone(), user.rev.clone()));
                                                 }
-                                            });
-                                            ui.end_row();
-                                        }
+                                                if ui.button("No").clicked() {
+                                                    cancel_delete = true;
+                                                }
+                                            } else {
+                                                if ui.button("Edit").clicked() {
+                                                    edit_user = Some(user.clone());
+                                                }
+                                                if ui.button("Delete").clicked() {
+                                                    request_delete = Some(user.id.clone());
+                                                }
+                                            }
+                                        });
                                     });
-                            });
+                                });
+                        });
                         if let Some(row) = edit_user {
                             self.user_name_input = row.name.clone();
                             self.user_password_input.clear();
@@ -2896,31 +2996,36 @@ impl eframe::App for MyEguiApp {
                         let visible: Vec<&DocRow> = self.doc_list.iter().filter(|d| filter.is_empty() || d.id.to_lowercase().contains(&filter)).collect();
                         ui.label(format!("{} of {} documents", visible.len(), self.doc_list.len()));
                         let mut clicked_doc: Option<String> = None;
-                        egui::ScrollArea::both()
-                            .id_source("doc_list_scroll")
-                            .auto_shrink([false, false])
-                            .show(ui, |ui| {
-                                egui::Grid::new("doc_list_grid")
-                                    .striped(true)
-                                    .num_columns(2)
-                                    .spacing([16.0, 6.0])
-                                    .show(ui, |ui| {
+                        ui.push_id("doc_list_table", |ui| {
+                            TableBuilder::new(ui)
+                                .striped(true)
+                                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                                .auto_shrink([false, false])
+                                .column(Column::remainder().at_least(220.0))
+                                .column(Column::initial(140.0).at_least(100.0))
+                                .header(22.0, |mut header| {
+                                    header.col(|ui| {
                                         ui.strong("Document ID");
+                                    });
+                                    header.col(|ui| {
                                         ui.strong("Rev");
-                                        ui.end_row();
-                                        for doc in visible {
+                                    });
+                                })
+                                .body(|body| {
+                                    body.rows(22.0, visible.len(), |mut row| {
+                                        let doc = visible[row.index()];
+                                        row.col(|ui| {
                                             let selected = self.selected_doc.as_deref() == Some(doc.id.as_str());
-                                            if ui
-                                                .selectable_label(selected, doc.id.as_str())
-                                                .clicked()
-                                            {
+                                            if ui.selectable_label(selected, doc.id.as_str()).clicked() {
                                                 clicked_doc = Some(doc.id.clone());
                                             }
+                                        });
+                                        row.col(|ui| {
                                             ui.label(doc.rev.as_str());
-                                            ui.end_row();
-                                        }
+                                        });
                                     });
-                            });
+                                });
+                        });
                         if let Some(id) = clicked_doc {
                             self.selected_doc = Some(id.clone());
                             self.doc_loading = true;
@@ -2933,68 +3038,101 @@ impl eframe::App for MyEguiApp {
                     }
                 } else if !self.db_infos.is_empty() {
                     ui.label("Databases Info");
-                    egui::ScrollArea::both()
-                        .id_source("db_info_scroll")
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            egui::Grid::new("db_info_grid")
-                                .striped(true)
-                                .num_columns(7)
-                                .spacing([16.0, 6.0])
-                                .show(ui, |ui| {
+                    let mut clicked_db: Option<String> = None;
+                    ui.push_id("db_info_table", |ui| {
+                        TableBuilder::new(ui)
+                            .striped(true)
+                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                            .auto_shrink([false, false])
+                            .column(Column::auto_with_initial_suggestion(220.0).at_least(160.0))
+                            .column(Column::initial(80.0).at_least(60.0))
+                            .column(Column::initial(90.0).at_least(70.0))
+                            .column(Column::initial(90.0).at_least(70.0))
+                            .column(Column::initial(90.0).at_least(70.0))
+                            .column(Column::initial(80.0).at_least(60.0))
+                            .column(Column::initial(100.0).at_least(80.0))
+                            .header(22.0, |mut header| {
+                                header.col(|ui| {
                                     ui.strong("Database");
+                                });
+                                header.col(|ui| {
                                     ui.strong("Docs");
+                                });
+                                header.col(|ui| {
                                     ui.strong("Deleted");
+                                });
+                                header.col(|ui| {
                                     ui.strong("Data");
+                                });
+                                header.col(|ui| {
                                     ui.strong("Disk");
+                                });
+                                header.col(|ui| {
                                     ui.strong("Public");
+                                });
+                                header.col(|ui| {
                                     ui.strong("Compacting");
-                                    ui.end_row();
-                                    let mut clicked_db: Option<String> = None;
-                                    for r in &self.db_infos {
+                                });
+                            })
+                            .body(|body| {
+                                body.rows(22.0, self.db_infos.len(), |mut row| {
+                                    let r = &self.db_infos[row.index()];
+                                    row.col(|ui| {
                                         let label = Self::db_display_label(&r.name);
                                         let selected = self.database == r.name;
                                         if ui.selectable_label(selected, label).clicked() {
                                             clicked_db = Some(r.name.clone());
                                         }
+                                    });
+                                    row.col(|ui| {
                                         ui.label(
                                             r.doc_count
                                                 .map(|v| v.to_string())
                                                 .unwrap_or_else(|| "-".to_string()),
                                         );
+                                    });
+                                    row.col(|ui| {
                                         ui.label(
                                             r.doc_del_count
                                                 .map(|v| v.to_string())
                                                 .unwrap_or_else(|| "-".to_string()),
                                         );
+                                    });
+                                    row.col(|ui| {
                                         ui.label(Self::format_bytes(r.data_size));
+                                    });
+                                    row.col(|ui| {
                                         ui.label(Self::format_bytes(r.disk_size));
+                                    });
+                                    row.col(|ui| {
                                         match r.public {
                                             Some(true) => ui.label(egui::RichText::new("yes").color(egui::Color32::from_rgb(110, 210, 110)).strong()),
                                             Some(false) => ui.label(egui::RichText::new("no").color(egui::Color32::from_gray(150))),
                                             None => ui.label(egui::RichText::new("...").weak()),
                                         };
+                                    });
+                                    row.col(|ui| {
                                         ui.label(match r.compact_running {
                                             Some(true) => "yes",
                                             Some(false) => "no",
                                             None => "-",
                                         });
-                                        ui.end_row();
-                                    }
-                                    if let Some(db) = clicked_db {
-                                        self.database = db.clone();
-                                        self.selected_db = Some(db.clone());
-                                        self.doc_list.clear();
-                                        self.selected_doc = None;
-                                        self.doc_json = None;
-                                        self.doc_loading = false;
-                                        self.doc_filter.clear();
-                                        self.set_mode(AppMode::Docs);
-                                        self.log_lines.push_str(&format!("\nSelected database: {db}"));
-                                        self.load_docs(ctx, &db);
-                                    }
+                                    });
                                 });
-                        });
+                            });
+                    });
+                    if let Some(db) = clicked_db {
+                        self.database = db.clone();
+                        self.selected_db = Some(db.clone());
+                        self.doc_list.clear();
+                        self.selected_doc = None;
+                        self.doc_json = None;
+                        self.doc_loading = false;
+                        self.doc_filter.clear();
+                        self.set_mode(AppMode::Docs);
+                        self.log_lines.push_str(&format!("\nSelected database: {db}"));
+                        self.load_docs(ctx, &db);
+                    }
                 } else if self.db_list.is_empty() {
                     ui.label("Controls / content area");
                 } else {
