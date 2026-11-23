@@ -1,4 +1,4 @@
-name: Pages Upload 
+name: Pages 
 on:
   workflow_dispatch:
   workflow_call:
