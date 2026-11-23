@@ -53,6 +53,17 @@ cargo build --release
 - "Load DB info" (database list header) and "Dbs Info" fetch details on demand.
 - "Check public access" runs the per-database public check separately.
 
+## Workflows
+- `.github/workflows/control.yml` is the single entry point. It runs on pushes to
+  `main`, any tag, and the **Run workflow** button.
+- The `jobs:` block is a one-line-per-build list. All eight builds are listed; comment
+  out a line with `#` to disable it, remove the `#` to enable it. Currently enabled:
+  `pages` only.
+- Every leaf workflow is `workflow_call` + `workflow_dispatch` only and is gated by
+  `github.repository_owner == 'veto8'` (matching `origin`). `control.yml` grants
+  `pages: write` / `id-token: write` so the `pages` target can deploy.
+- `msix` downloads `couchy.exe` from the `veto8/couchy` `main` release.
+
 ## Conventions
 - No comments in code unless asked.
 - Verify: `cargo check && cargo build`

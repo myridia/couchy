@@ -12,7 +12,7 @@ permissions:
 jobs:
   build-msix:
     runs-on: windows-latest 
-    if: github.repository_owner == 'myridia'
+    if: github.repository_owner == 'veto8'
 
     steps:
       - name: Checkout code
@@ -25,7 +25,7 @@ jobs:
 
       - name: Download_exe 
         run: |
-         curl -L "https://github.com/myridia/couchy/releases/download/main/couchy.exe" -o "./couchy.exe"
+         curl -L "https://github.com/veto8/couchy/releases/download/main/couchy.exe" -o "./couchy.exe"
          
       - name: Certificate 
         run: |
